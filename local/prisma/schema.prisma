@@ -98,3 +98,13 @@ model SubscriptionAutoUpdateState {
 
   subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
 }
+
+// 单例全局设置（固定一行 id="global"）。
+model LocalSetting {
+  id                             String   @id @default("global")
+  // 开启后：客户端拉取 config.yaml 时，若距上次刷新超过最小间隔，则先去上游刷新再返回最新。
+  forceRefreshOnFetch            Boolean  @default(false)
+  forceRefreshMinIntervalSeconds Int      @default(600)
+  createdAt                      DateTime @default(now())
+  updatedAt                      DateTime @updatedAt
+}

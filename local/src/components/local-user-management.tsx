@@ -15,6 +15,7 @@ import {
 } from "@subboost/ui/components/ui/dialog";
 import { Input } from "@subboost/ui/components/ui/input";
 import { Label } from "@subboost/ui/components/ui/label";
+import { Switch } from "@subboost/ui/components/ui/switch";
 import { confirmDialog } from "@subboost/ui/components/ui/confirm-dialog";
 import { toast } from "@subboost/ui/components/ui/toaster";
 import { cn } from "@subboost/ui/lib/utils";
@@ -66,6 +67,11 @@ type AdminStats = {
   };
   users: AdminUserStat[];
   throttledSubscriptions: ThrottledSubscriptionItem[];
+};
+
+type LocalSettings = {
+  forceRefreshOnFetch: boolean;
+  forceRefreshMinIntervalSeconds: number;
 };
 
 type QuotaForm = {
@@ -158,6 +164,10 @@ export function LocalUserManagement() {
   const [editPassword, setEditPassword] = React.useState("");
   const [editQuota, setEditQuota] = React.useState<QuotaForm>(EMPTY_QUOTA);
 
+  const [forceRefresh, setForceRefresh] = React.useState(false);
+  const [minInterval, setMinInterval] = React.useState("600");
+  const [savingSettings, setSavingSettings] = React.useState(false);
+
   const load = React.useCallback(async () => {
     setLoading(true);
     try {
@@ -170,6 +180,13 @@ export function LocalUserManagement() {
       const next = await readJsonResponse<AdminStats>(res, "加载用户数据失败");
       setData(next);
       setForbidden(false);
+
+      const settingsRes = await fetch("/api/admin/settings", { cache: "no-store" });
+      if (settingsRes.ok) {
+        const s = await readJsonResponse<{ settings: LocalSettings }>(settingsRes, "");
+        setForceRefresh(s.settings.forceRefreshOnFetch);
+        setMinInterval(String(s.settings.forceRefreshMinIntervalSeconds));
+      }
     } catch (error) {
       toast({ variant: "destructive", title: "加载失败", description: errMessage(error) });
     } finally {
@@ -284,6 +301,28 @@ export function LocalUserManagement() {
       toast({ variant: "destructive", title: "解除失败", description: errMessage(error) });
     } finally {
       setBusyId(null);
+    }
+  };
+
+  const handleSaveSettings = async () => {
+    try {
+      setSavingSettings(true);
+      const res = await fetch("/api/admin/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          forceRefreshOnFetch: forceRefresh,
+          forceRefreshMinIntervalSeconds: Number(minInterval),
+        }),
+      });
+      const payload = await readJsonResponse<{ settings: LocalSettings }>(res, "保存失败");
+      setForceRefresh(payload.settings.forceRefreshOnFetch);
+      setMinInterval(String(payload.settings.forceRefreshMinIntervalSeconds));
+      toast({ variant: "success", title: "设置已保存" });
+    } catch (error) {
+      toast({ variant: "destructive", title: "保存失败", description: errMessage(error) });
+    } finally {
+      setSavingSettings(false);
     }
   };
 
@@ -409,6 +448,38 @@ export function LocalUserManagement() {
                   </div>
                 );
               })}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">全局设置</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">客户端拉取时强制刷新订阅</p>
+                  <p className="mt-1 text-xs text-white/40">
+                    开启后，客户端每次拉取会先去上游刷新（受下方最小间隔限制）再返回最新节点；上游刷新失败会直接返回错误。这会明显增加服务器与上游开销，请配合限流一起使用。
+                  </p>
+                </div>
+                <Switch checked={forceRefresh} onCheckedChange={setForceRefresh} />
+              </div>
+              {forceRefresh ? (
+                <div className="space-y-1.5">
+                  <Label className="text-xs">最小刷新间隔（秒，不小于 60）</Label>
+                  <Input
+                    type="number"
+                    min={60}
+                    value={minInterval}
+                    onChange={(e) => setMinInterval(e.target.value)}
+                    className="max-w-[200px]"
+                  />
+                </div>
+              ) : null}
+              <Button onClick={() => void handleSaveSettings()} disabled={savingSettings}>
+                {savingSettings ? "保存中…" : "保存设置"}
+              </Button>
             </CardContent>
           </Card>
         </div>

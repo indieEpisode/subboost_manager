@@ -204,7 +204,7 @@ describe("local login component", () => {
       4: false,
     });
 
-    mocks.inputs.find((input) => input.placeholder === "管理员账号").onChange({ target: { value: "root" } });
+    mocks.inputs.find((input) => input.placeholder === "账号").onChange({ target: { value: "root" } });
     mocks.inputs.find((input) => input.placeholder === "密码").onChange({ target: { value: "next" } });
     mocks.buttons.find((button) => button.type === "button").onClick();
     await mocks.forms[0].onSubmit({ preventDefault: vi.fn() });

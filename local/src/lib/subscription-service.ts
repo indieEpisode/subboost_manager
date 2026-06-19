@@ -27,6 +27,7 @@ import { fetchSourceUserInfoHeadersDirect, importSourceUrlDirect } from "./sourc
 import { normalizeLocalAutoUpdateIntervalSeconds } from "./auto-update-policy";
 import { assertSubscriptionQuotaAvailable } from "./quota-policy";
 import { resolvePullRateLimitConfig, resolveRefreshRateLimitConfig } from "./rate-limit-policy";
+import { getLocalSettings, shouldForceRefresh } from "./settings-service";
 
 export const MAX_NODES_PER_SUBSCRIPTION = 10000;
 export const CACHE_TTL_SECONDS = 3600;
@@ -107,7 +108,8 @@ export type GeneratedSubscriptionYaml = {
 export type GenerateSubscriptionYamlOutcome =
   | { status: "ok"; data: GeneratedSubscriptionYaml }
   | { status: "not_found" }
-  | { status: "throttled"; retryAfterSeconds: number };
+  | { status: "throttled"; retryAfterSeconds: number }
+  | { status: "refresh_failed"; message: string };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -353,6 +355,33 @@ async function persistRefreshSuccess(params: {
   });
 }
 
+// 强制刷新拉取时复用：去上游抓最新节点并落库。pull 限流已在外层控制，此处不再额外限流。
+async function refreshSnapshotFromUpstream(
+  row: SubscriptionRow
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  try {
+    const secrets = readSubscriptionSecrets(row);
+    const snapshot = await refreshNodeSnapshot({
+      config: secrets.config,
+      urls: secrets.urls,
+      storedNodes: secrets.nodes,
+      ...buildSubscriptionFetchCallbacks(),
+    });
+    const refreshResult = prepareRefreshCacheResult({
+      config: secrets.config,
+      snapshot,
+      maxNodesPerSubscription: MAX_NODES_PER_SUBSCRIPTION,
+    });
+    if (!refreshResult.ok) {
+      return { ok: false, message: "上游订阅刷新失败，请稍后再试。" };
+    }
+    await persistRefreshSuccess({ subscriptionId: row.id, snapshot, config: secrets.config, cachedAt: new Date() });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "上游订阅刷新失败" };
+  }
+}
+
 export async function refreshSubscription(ownerId: string, id: string) {
   const row = await prisma.subscription.findFirst({ where: { id, ownerId }, include: { autoUpdateState: true } });
   if (!row) return null;
@@ -456,8 +485,19 @@ export async function generateSubscriptionYaml(token: string): Promise<GenerateS
   if (gate.kind === "not_found") return { status: "not_found" };
   if (gate.kind === "throttled") return { status: "throttled", retryAfterSeconds: gate.retryAfterSeconds };
 
-  const row = gate.row;
-  const secrets = readSubscriptionSecrets(row);
+  // 强制刷新（事务外，慢操作）：全局开关开 + 距上次刷新超过最小间隔 → 先去上游刷新再返回最新。
+  let source: SubscriptionRow = gate.row;
+  const settings = await getLocalSettings();
+  if (shouldForceRefresh(settings, source.lastUpdatedAt, now)) {
+    const refreshed = await refreshSnapshotFromUpstream(source);
+    if (!refreshed.ok) {
+      return { status: "refresh_failed", message: refreshed.message };
+    }
+    const latest = await prisma.subscription.findUnique({ where: { id: source.id } });
+    if (latest) source = latest;
+  }
+
+  const secrets = readSubscriptionSecrets(source);
   const { testUrl, testInterval } = getEffectiveTestOptions(secrets.config);
   const proxyProviders = buildProxyProvidersFromConfig(secrets.config, { testUrl, testInterval });
   if (secrets.nodes.length === 0 && !proxyProviders) return { status: "not_found" };
@@ -471,10 +511,10 @@ export async function generateSubscriptionYaml(token: string): Promise<GenerateS
     status: "ok",
     data: {
       yaml,
-      name: row.name,
+      name: source.name,
       subscriptionInfo: secrets.subscriptionInfo,
       cacheExpirySeconds: CACHE_TTL_SECONDS,
-      autoUpdateIntervalSeconds: row.autoUpdateInterval,
+      autoUpdateIntervalSeconds: source.autoUpdateInterval,
       isAdmin: true,
     },
   };

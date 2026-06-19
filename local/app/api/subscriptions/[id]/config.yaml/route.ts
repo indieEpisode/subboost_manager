@@ -24,6 +24,16 @@ export async function GET(_request: Request, { params }: RouteContext) {
       },
     });
   }
+  if (result.status === "refresh_failed") {
+    // 强制刷新开启时，去上游拉取失败：明确返回错误，不下发可能过期的快照。
+    return new Response(`订阅强制刷新失败：${result.message}`, {
+      status: 502,
+      headers: {
+        "content-type": "text/plain;charset=utf-8",
+        "cache-control": "no-store",
+      },
+    });
+  }
 
   const data = result.data;
   return new Response(data.yaml, {

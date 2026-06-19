@@ -42,6 +42,9 @@ const mocks = vi.hoisted(() => ({
     localAdmin: {
       findUnique: vi.fn(),
     },
+    localSetting: {
+      findUnique: vi.fn(),
+    },
     $transaction: vi.fn(),
   },
 }));
@@ -176,6 +179,7 @@ describe("local subscription service", () => {
     mocks.prisma.subscription.delete.mockResolvedValue(row());
     mocks.prisma.subscription.count.mockResolvedValue(0);
     mocks.prisma.localAdmin.findUnique.mockResolvedValue({ maxSubscriptions: null });
+    mocks.prisma.localSetting.findUnique.mockResolvedValue(null);
     // 限流与刷新事务回调里用 tx.subscription.*/subscriptionAutoUpdateState.*，直接复用同一组 mock。
     mocks.prisma.$transaction.mockImplementation(async (callback) => callback(mocks.prisma));
     mocks.importSourceUrlDirect.mockResolvedValue({
