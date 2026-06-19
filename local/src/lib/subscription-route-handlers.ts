@@ -68,6 +68,11 @@ export async function refreshSubscriptionResponse(id: string) {
   return withCurrentAdmin(async (admin) => {
     const result = await refreshSubscription(admin.id, id);
     if (!result) return apiError("Subscription not found.", "NOT_FOUND", 404);
+    if ("throttled" in result && result.throttled) {
+      const res = json({ error: "刷新过于频繁，请稍后再试。", retryAfterSeconds: result.retryAfterSeconds }, 429);
+      res.headers.set("retry-after", String(result.retryAfterSeconds));
+      return res;
+    }
     if (!result.ok) return json(result.response.body, result.response.status);
     return json(result.body);
   });

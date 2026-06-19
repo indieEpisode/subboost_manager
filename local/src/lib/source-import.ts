@@ -77,6 +77,12 @@ async function validatePublicFetchTarget(url: string): Promise<SourceImportTrans
     return toSecurityFailure("订阅 URL 不允许包含用户名或密码");
   }
 
+  // 仅供本地开发：显式放宽后允许抓取本机/内网订阅源（例如本地 mock 或代理 fake-ip 解析）。
+  // 生产环境务必保持关闭，否则会引入 SSRF 风险。
+  if (process.env.ALLOW_PRIVATE_SUBSCRIPTION_FETCH === "true") {
+    return null;
+  }
+
   const hostname = normalizeHostname(parsed.hostname);
   if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) {
     return toSecurityFailure("禁止访问本机或内网地址");

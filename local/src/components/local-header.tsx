@@ -60,5 +60,12 @@ export function LocalHeader() {
     };
   }, []);
 
-  return <Header mode="local" extraBrandBadge={newReleaseBadge} />;
+  // 「用户管理」入口：Header 内部按 user.isAdmin 控制可见性，普通用户不会看到。
+  return (
+    <Header
+      mode="local"
+      extraBrandBadge={newReleaseBadge}
+      privilegedMenuItem={{ href: "/dashboard/users", label: "用户管理" }}
+    />
+  );
 }

@@ -7,6 +7,7 @@ import type { ParsedNode } from "@subboost/core/types/node";
 import {
   buildManualRefreshFailureResponse,
   buildManualRefreshSuccessResponseBody,
+  evaluateFixedWindow,
   normalizeSubscriptionConfigForPersistence,
   normalizeSubscriptionInfoForPersistence,
   normalizeSubscriptionName,
@@ -24,6 +25,8 @@ import { getAppUrl } from "./env";
 import { prisma } from "./prisma";
 import { fetchSourceUserInfoHeadersDirect, importSourceUrlDirect } from "./source-import";
 import { normalizeLocalAutoUpdateIntervalSeconds } from "./auto-update-policy";
+import { assertSubscriptionQuotaAvailable } from "./quota-policy";
+import { resolvePullRateLimitConfig, resolveRefreshRateLimitConfig } from "./rate-limit-policy";
 
 export const MAX_NODES_PER_SUBSCRIPTION = 10000;
 export const CACHE_TTL_SECONDS = 3600;
@@ -42,6 +45,8 @@ export type SubscriptionRow = {
   cacheExpiresAt: Date | null;
   lastAccessedAt: Date | null;
   lastUpdatedAt: Date | null;
+  pullThrottledUntil: Date | null;
+  refreshThrottledUntil: Date | null;
   createdAt: Date;
   updatedAt: Date;
   autoUpdateState?: {
@@ -69,6 +74,8 @@ export type SubscriptionSummary = {
   cacheExpiresAt: string | null;
   lastAccessedAt: string | null;
   lastUpdatedAt: string | null;
+  pullThrottledUntil: string | null;
+  refreshThrottledUntil: string | null;
   createdAt: string;
   updatedAt: string;
   autoUpdateState: {
@@ -96,6 +103,11 @@ export type GeneratedSubscriptionYaml = {
   autoUpdateIntervalSeconds: number | null;
   isAdmin: boolean;
 };
+
+export type GenerateSubscriptionYamlOutcome =
+  | { status: "ok"; data: GeneratedSubscriptionYaml }
+  | { status: "not_found" }
+  | { status: "throttled"; retryAfterSeconds: number };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -136,27 +148,37 @@ export function readSubscriptionSecrets(row: SubscriptionRow) {
 export function formatSubscription(row: SubscriptionRow): SubscriptionSummary {
   const secrets = readSubscriptionSecrets(row);
   const subscriptionUrl = buildLocalSubscriptionUrl(row.token);
-  return serializeSubscriptionSummaryData(row, secrets, {
+  const summary = serializeSubscriptionSummaryData(row, secrets, {
     subscriptionUrl,
     yamlUrl: subscriptionUrl,
     dateMode: "iso",
     includeCounts: true,
     includeFailureSourceState: false,
     includeLastAttemptedAt: true,
-  }) as SubscriptionSummary;
+  }) as Omit<SubscriptionSummary, "pullThrottledUntil" | "refreshThrottledUntil">;
+  return {
+    ...summary,
+    pullThrottledUntil: row.pullThrottledUntil ? row.pullThrottledUntil.toISOString() : null,
+    refreshThrottledUntil: row.refreshThrottledUntil ? row.refreshThrottledUntil.toISOString() : null,
+  };
 }
 
 export function formatSubscriptionDetail(row: SubscriptionRow): SubscriptionDetail {
   const secrets = readSubscriptionSecrets(row);
   const subscriptionUrl = buildLocalSubscriptionUrl(row.token);
-  return serializeSubscriptionDetailData(row, secrets, {
+  const detail = serializeSubscriptionDetailData(row, secrets, {
     subscriptionUrl,
     yamlUrl: subscriptionUrl,
     dateMode: "iso",
     includeCounts: true,
     includeFailureSourceState: false,
     includeLastAttemptedAt: true,
-  }) as SubscriptionDetail;
+  }) as Omit<SubscriptionDetail, "pullThrottledUntil" | "refreshThrottledUntil">;
+  return {
+    ...detail,
+    pullThrottledUntil: row.pullThrottledUntil ? row.pullThrottledUntil.toISOString() : null,
+    refreshThrottledUntil: row.refreshThrottledUntil ? row.refreshThrottledUntil.toISOString() : null,
+  };
 }
 
 export async function listSubscriptions(ownerId: string): Promise<SubscriptionSummary[]> {
@@ -178,6 +200,10 @@ export async function createSubscription(ownerId: string, body: unknown): Promis
   const urls = normalizeSubscriptionUrlList(body.urls);
   const nodes = normalizeSubscriptionNodeList(body.nodes);
   if (urls.length === 0 && nodes.length === 0) throw new Error("At least one URL or node is required.");
+
+  // 配额：超过该用户的订阅数上限则拒绝创建。
+  const owner = await prisma.localAdmin.findUnique({ where: { id: ownerId }, select: { maxSubscriptions: true } });
+  await assertSubscriptionQuotaAvailable(ownerId, owner?.maxSubscriptions ?? null);
 
   const config = buildLocalSubscriptionConfig(body);
   const autoUpdateInterval = normalizeLocalAutoUpdateIntervalSeconds(body.autoUpdateInterval);
@@ -331,6 +357,29 @@ export async function refreshSubscription(ownerId: string, id: string) {
   const row = await prisma.subscription.findFirst({ where: { id, ownerId }, include: { autoUpdateState: true } });
   if (!row) return null;
 
+  // 手动刷新限流：超过窗口阈值进入冷却，期内拒绝（避免反复去上游机场拉节点）。
+  const throttleNow = new Date();
+  const refreshDecision = evaluateFixedWindow(
+    throttleNow,
+    {
+      windowStartedAt: row.refreshWindowStartedAt,
+      countInWindow: row.refreshCountInWindow,
+      throttledUntil: row.refreshThrottledUntil,
+    },
+    resolveRefreshRateLimitConfig()
+  );
+  await prisma.subscription.update({
+    where: { id: row.id },
+    data: {
+      refreshWindowStartedAt: refreshDecision.nextState.windowStartedAt,
+      refreshCountInWindow: refreshDecision.nextState.countInWindow,
+      refreshThrottledUntil: refreshDecision.nextState.throttledUntil,
+    },
+  });
+  if (!refreshDecision.allowed) {
+    return { ok: false as const, throttled: true as const, retryAfterSeconds: refreshDecision.retryAfterSeconds };
+  }
+
   const secrets = readSubscriptionSecrets(row);
   const snapshot = await refreshNodeSnapshot({
     config: secrets.config,
@@ -367,26 +416,66 @@ export async function refreshSubscription(ownerId: string, id: string) {
   };
 }
 
-export async function generateSubscriptionYaml(token: string): Promise<GeneratedSubscriptionYaml | null> {
-  const row = await prisma.subscription.findUnique({ where: { token }, include: { autoUpdateState: true } });
-  if (!row) return null;
+export async function generateSubscriptionYaml(token: string): Promise<GenerateSubscriptionYamlOutcome> {
+  const now = new Date();
+  // 限流判断 + 状态写回放进一个事务，尽量减小并发计数误差；被限流则直接返回、不做重活。
+  const gate = await prisma.$transaction(async (tx) => {
+    const row = await tx.subscription.findUnique({
+      where: { token },
+      include: {
+        owner: { select: { pullRateLimitMax: true, pullRateWindowSeconds: true, pullCooldownSeconds: true } },
+      },
+    });
+    if (!row) return { kind: "not_found" as const };
+
+    const decision = evaluateFixedWindow(
+      now,
+      {
+        windowStartedAt: row.pullWindowStartedAt,
+        countInWindow: row.pullCountInWindow,
+        throttledUntil: row.pullThrottledUntil,
+      },
+      resolvePullRateLimitConfig(row.owner)
+    );
+    await tx.subscription.update({
+      where: { id: row.id },
+      data: {
+        pullWindowStartedAt: decision.nextState.windowStartedAt,
+        pullCountInWindow: decision.nextState.countInWindow,
+        pullThrottledUntil: decision.nextState.throttledUntil,
+        ...(decision.justTripped ? { pullThrottleTrippedAt: now } : {}),
+        ...(decision.allowed ? { lastAccessedAt: now } : {}),
+      },
+    });
+    if (!decision.allowed) {
+      return { kind: "throttled" as const, retryAfterSeconds: decision.retryAfterSeconds };
+    }
+    return { kind: "row" as const, row };
+  });
+
+  if (gate.kind === "not_found") return { status: "not_found" };
+  if (gate.kind === "throttled") return { status: "throttled", retryAfterSeconds: gate.retryAfterSeconds };
+
+  const row = gate.row;
   const secrets = readSubscriptionSecrets(row);
   const { testUrl, testInterval } = getEffectiveTestOptions(secrets.config);
   const proxyProviders = buildProxyProvidersFromConfig(secrets.config, { testUrl, testInterval });
-  if (secrets.nodes.length === 0 && !proxyProviders) return null;
+  if (secrets.nodes.length === 0 && !proxyProviders) return { status: "not_found" };
   const yaml = generateClashYaml(
     buildGenerateOptionsFromConfig(secrets.config, {
       nodes: secrets.nodes,
       proxyProviders,
     })
   );
-  await prisma.subscription.update({ where: { id: row.id }, data: { lastAccessedAt: new Date() } });
   return {
-    yaml,
-    name: row.name,
-    subscriptionInfo: secrets.subscriptionInfo,
-    cacheExpirySeconds: CACHE_TTL_SECONDS,
-    autoUpdateIntervalSeconds: row.autoUpdateInterval,
-    isAdmin: true,
+    status: "ok",
+    data: {
+      yaml,
+      name: row.name,
+      subscriptionInfo: secrets.subscriptionInfo,
+      cacheExpirySeconds: CACHE_TTL_SECONDS,
+      autoUpdateIntervalSeconds: row.autoUpdateInterval,
+      isAdmin: true,
+    },
   };
 }

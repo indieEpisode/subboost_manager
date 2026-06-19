@@ -95,7 +95,7 @@ export function LocalLogin() {
               <input
                 type="text"
                 autoComplete="username"
-                placeholder="管理员账号"
+                placeholder={setupRequired ? "管理员账号" : "账号"}
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-white/30 focus:outline-none focus:border-indigo-500/50 transition-colors"

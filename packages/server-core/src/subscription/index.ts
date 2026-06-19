@@ -5,6 +5,7 @@ export * from "./auto-update-state";
 export * from "./cron-update-summary";
 export * from "./crud";
 export * from "./fetch-profile-heuristics";
+export * from "./fetch-rate-limit";
 export * from "./manual-refresh-response";
 export * from "./refresh-cache-result";
 export * from "./refresh-node-snapshot";

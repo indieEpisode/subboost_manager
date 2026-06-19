@@ -11,11 +11,17 @@ export async function POST(request: Request) {
   const username = getStringField(body, "username");
   const password = getStringField(body, "password");
   const admin = username
-    ? await prisma.localAdmin.findUnique({ where: { username }, select: { id: true, username: true, passwordHash: true } })
+    ? await prisma.localAdmin.findUnique({
+        where: { username },
+        select: { id: true, username: true, passwordHash: true, disabledAt: true },
+      })
     : null;
   const valid = admin ? await bcrypt.compare(password, admin.passwordHash) : false;
   if (!admin || !valid) {
     return apiError("Invalid username or password.", "UNAUTHORIZED", 401);
+  }
+  if (admin.disabledAt) {
+    return apiError("账户已被禁用，请联系管理员。", "FORBIDDEN", 403);
   }
 
   await prisma.localAdmin.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } });

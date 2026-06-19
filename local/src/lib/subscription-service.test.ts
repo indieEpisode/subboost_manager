@@ -34,6 +34,13 @@ const mocks = vi.hoisted(() => ({
       findUnique: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
+      count: vi.fn(),
+    },
+    subscriptionAutoUpdateState: {
+      upsert: vi.fn(),
+    },
+    localAdmin: {
+      findUnique: vi.fn(),
     },
     $transaction: vi.fn(),
   },
@@ -128,6 +135,8 @@ function row(overrides: Partial<SubscriptionRow> = {}): SubscriptionRow {
     cacheExpiresAt: new Date("2026-06-01T01:00:00.000Z"),
     lastAccessedAt: new Date("2026-06-01T02:00:00.000Z"),
     lastUpdatedAt: new Date("2026-06-01T03:00:00.000Z"),
+    pullThrottledUntil: null,
+    refreshThrottledUntil: null,
     createdAt: new Date("2026-06-01T00:00:00.000Z"),
     updatedAt: new Date("2026-06-01T04:00:00.000Z"),
     autoUpdateState: {
@@ -165,12 +174,10 @@ describe("local subscription service", () => {
     mocks.prisma.subscription.findUnique.mockResolvedValue(row());
     mocks.prisma.subscription.update.mockResolvedValue(row({ name: "Updated" }));
     mocks.prisma.subscription.delete.mockResolvedValue(row());
-    mocks.prisma.$transaction.mockImplementation(async (callback) =>
-      callback({
-        subscription: { update: vi.fn() },
-        subscriptionAutoUpdateState: { upsert: vi.fn() },
-      })
-    );
+    mocks.prisma.subscription.count.mockResolvedValue(0);
+    mocks.prisma.localAdmin.findUnique.mockResolvedValue({ maxSubscriptions: null });
+    // 限流与刷新事务回调里用 tx.subscription.*/subscriptionAutoUpdateState.*，直接复用同一组 mock。
+    mocks.prisma.$transaction.mockImplementation(async (callback) => callback(mocks.prisma));
     mocks.importSourceUrlDirect.mockResolvedValue({
       ok: true,
       parsedNodes: [node("Imported")],
@@ -465,12 +472,15 @@ describe("local subscription service", () => {
 
   it("generates YAML and updates access time when a subscription has nodes or proxy providers", async () => {
     await expect(generateSubscriptionYaml("token-1")).resolves.toMatchObject({
-      yaml: "mixed-port: 7890\n",
-      name: "Saved",
-      subscriptionInfo: { upload: 2048, total: 4096 },
-      cacheExpirySeconds: 3600,
-      autoUpdateIntervalSeconds: 86400,
-      isAdmin: true,
+      status: "ok",
+      data: {
+        yaml: "mixed-port: 7890\n",
+        name: "Saved",
+        subscriptionInfo: { upload: 2048, total: 4096 },
+        cacheExpirySeconds: 3600,
+        autoUpdateIntervalSeconds: 86400,
+        isAdmin: true,
+      },
     });
     expect(mocks.buildGenerateOptionsFromConfig).toHaveBeenCalledWith(
       expect.objectContaining({ sources: expect.any(Array) }),
@@ -478,22 +488,25 @@ describe("local subscription service", () => {
     );
     expect(mocks.prisma.subscription.update).toHaveBeenCalledWith({
       where: { id: "sub-1" },
-      data: { lastAccessedAt: expect.any(Date) },
+      data: expect.objectContaining({ lastAccessedAt: expect.any(Date) }),
     });
 
     mocks.prisma.subscription.findUnique.mockResolvedValueOnce(null);
-    await expect(generateSubscriptionYaml("missing")).resolves.toBeNull();
+    await expect(generateSubscriptionYaml("missing")).resolves.toEqual({ status: "not_found" });
 
     mocks.prisma.subscription.findUnique.mockResolvedValueOnce(
       row({ encryptedNodes: JSON.stringify([]), encryptedConfig: JSON.stringify({}) })
     );
     mocks.buildProxyProvidersFromConfig.mockReturnValueOnce(null);
-    await expect(generateSubscriptionYaml("empty")).resolves.toBeNull();
+    await expect(generateSubscriptionYaml("empty")).resolves.toEqual({ status: "not_found" });
 
     mocks.prisma.subscription.findUnique.mockResolvedValueOnce(
       row({ encryptedNodes: JSON.stringify([]), encryptedConfig: JSON.stringify({ proxyProviders: { provider: {} } }) })
     );
     mocks.buildProxyProvidersFromConfig.mockReturnValueOnce({ provider: { url: "https://example.com/provider.yaml" } });
-    await expect(generateSubscriptionYaml("provider-only")).resolves.toMatchObject({ yaml: "mixed-port: 7890\n" });
+    await expect(generateSubscriptionYaml("provider-only")).resolves.toMatchObject({
+      status: "ok",
+      data: { yaml: "mixed-port: 7890\n" },
+    });
   });
 });

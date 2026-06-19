@@ -6,6 +6,7 @@ import {
 import { readJsonResponse } from "@subboost/ui/product/client-response";
 import type { RefreshSubscriptionResponse, Subscription } from "@subboost/ui/dashboard/dashboard-types";
 import { LOCAL_AUTO_UPDATE_POLICY } from "@local/lib/auto-update-policy";
+import { SubscriptionThrottleNotice } from "@local/components/subscription-throttle-notice";
 
 function resolveLocalDashboardDownloadUrl(subscription: Subscription): string {
   try {
@@ -53,5 +54,10 @@ const localDashboardAdapter: DashboardSurfaceAdapter = {
 };
 
 export default function DashboardPage() {
-  return <SubscriptionDashboardSurface adapter={localDashboardAdapter} />;
+  return (
+    <>
+      <SubscriptionThrottleNotice />
+      <SubscriptionDashboardSurface adapter={localDashboardAdapter} />
+    </>
+  );
 }

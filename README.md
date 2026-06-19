@@ -25,6 +25,8 @@
 - **Rule management**: Reorder rules for deeper customization by advanced users.
 - **DNS leak prevention**: The default `basic and DNS configuration` helps prevent DNS leaks.
 - **Automatic refresh**: Refresh subscriptions on a schedule and intelligently match nodes during refresh.
+- **Multi-user management**: Admins can create regular user accounts with resource quotas; each account's subscriptions and configuration stay isolated and invisible to others. Admins can reset passwords, disable, or delete accounts.
+- **Fetch rate limiting**: Automatically detects subscription fetch frequency and temporarily disables fetching (returning 429) once a configurable threshold is exceeded, protecting server CPU and bandwidth from abusive polling. Cooldown clears automatically, and admins can also review throttle status and clear it manually from the user management panel.
 
 ## Interface Preview
 

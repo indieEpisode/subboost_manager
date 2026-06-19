@@ -16,3 +16,13 @@ export async function withCurrentAdmin(handler: AdminResponseHandler): Promise<R
   if (!admin) return localAdminRequiredResponse();
   return handler(admin);
 }
+
+/** 仅管理员（role === "admin"）可访问；用于 /api/admin/* 等管理端点。 */
+export async function withAdminAccount(handler: AdminResponseHandler): Promise<Response> {
+  const admin = await getCurrentAdmin();
+  if (!admin) return localAdminRequiredResponse();
+  if (admin.role !== "admin") {
+    return apiError("需要管理员权限。", "FORBIDDEN", 403);
+  }
+  return handler(admin);
+}

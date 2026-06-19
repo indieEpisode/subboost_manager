@@ -92,17 +92,20 @@ beforeEach(() => {
   vi.mocked(createSubscription).mockResolvedValue(subscription as never);
   vi.mocked(deleteSubscription).mockResolvedValue(true);
   vi.mocked(generateSubscriptionYaml).mockResolvedValue({
-    yaml: "mixed-port: 7890\n",
-    name: "Main",
-    subscriptionInfo: {
-      upload: 64,
-      download: 128,
-      total: 1024,
-      expire: 1781635200,
+    status: "ok",
+    data: {
+      yaml: "mixed-port: 7890\n",
+      name: "Main",
+      subscriptionInfo: {
+        upload: 64,
+        download: 128,
+        total: 1024,
+        expire: 1781635200,
+      },
+      cacheExpirySeconds: 3600,
+      autoUpdateIntervalSeconds: 86400,
+      isAdmin: true,
     },
-    cacheExpirySeconds: 3600,
-    autoUpdateIntervalSeconds: 86400,
-    isAdmin: true,
   } as never);
   vi.mocked(getSubscription).mockResolvedValue(subscription as never);
   vi.mocked(listSubscriptions).mockResolvedValue([subscription] as never);

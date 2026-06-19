@@ -11,6 +11,20 @@ model LocalAdmin {
   id           String    @id @default(cuid())
   username     String    @unique
   passwordHash String
+  // "admin"：可管理其他用户与限流；"user"：只能管理自己的订阅/模板。
+  // 默认 admin 让首个（setup）账号及历史单管理员记录迁移后无缝成为管理员。
+  role         String    @default("admin")
+  // 非空表示账户被禁用：禁止登录，且 getCurrentAdmin 视其为未登录。
+  disabledAt   DateTime?
+
+  // 每用户配额（null = 用全局默认/不限）。
+  maxSubscriptions        Int?
+  maxNodesPerSubscription Int?
+  // 拉取限流阈值（null = 用全局默认）：窗口内最大次数 / 窗口秒数 / 超限冷却秒数。
+  pullRateLimitMax        Int?
+  pullRateWindowSeconds   Int?
+  pullCooldownSeconds     Int?
+
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
   lastLoginAt  DateTime?
@@ -48,6 +62,17 @@ model Subscription {
   cacheExpiresAt                DateTime?
   lastAccessedAt                DateTime?
   lastUpdatedAt                 DateTime?
+
+  // 拉取（config.yaml）限流运行态：固定窗口计数 + 冷却到期时间。
+  pullWindowStartedAt           DateTime?
+  pullCountInWindow             Int       @default(0)
+  pullThrottledUntil            DateTime?
+  pullThrottleTrippedAt         DateTime?
+  // 手动刷新限流运行态（独立窗口）。
+  refreshWindowStartedAt        DateTime?
+  refreshCountInWindow          Int       @default(0)
+  refreshThrottledUntil         DateTime?
+
   createdAt                     DateTime  @default(now())
   updatedAt                     DateTime  @updatedAt
 
@@ -56,6 +81,7 @@ model Subscription {
 
   @@index([ownerId])
   @@index([lastUpdatedAt])
+  @@index([pullThrottledUntil])
 }
 
 model SubscriptionAutoUpdateState {
