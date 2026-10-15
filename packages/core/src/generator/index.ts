@@ -21,14 +21,23 @@ import {
 import { DEFAULT_DNS_CONFIG } from "./dns";
 import { resolveProxyGroupModuleName } from "@subboost/core/proxy-group-name";
 import type { ParsedNode } from "@subboost/core/types/node";
-import type { ClashConfig, UserConfig, TemplateType, ProxyGroup } from "@subboost/core/types/config";
-import type { CustomProxyGroup } from "@subboost/core/types/config";
-import type { DialerProxyGroup, ModuleRuleOverride } from "@subboost/core/types/template-config";
-import type { FilteredProxyGroup } from "@subboost/core/types/filtered-proxy-group";
+import type {
+  BuiltinRuleEdits,
+  ClashConfig,
+  CustomProxyGroup,
+  CustomRuleSet,
+  GroupListenerBinding,
+  ProxyGroup,
+  ProxyGroupAdvancedConfig,
+  TemplateType,
+  UserConfig,
+} from "@subboost/core/types/config";
+import type { DialerProxyGroup } from "@subboost/core/types/template-config";
 import { collectDnsPolicyEntries, configToYaml } from "./yaml";
-import type { ModuleRuleExclusions } from "./module-rules";
-import { isMihomoSupportedProxyNode, normalizeMihomoVlessForGeneration } from "@subboost/core/mihomo/proxy-sanitizer";
+import { isMihomoSupportedProxyNode, normalizeMihomoVlessForGeneration } from "../mihomo/proxy-sanitizer";
+import { getValidDialerRelayGroupNames } from "../subscription/dialer-relay-group-names";
 import { chooseFallbackPolicyTarget, withBuiltinPolicyTargets } from "./policy-targets";
+import { resolveGroupListenerEntries, type GroupListenerTargetResolution } from "./group-listeners";
 
 export interface GenerateOptions {
   nodes: ParsedNode[];
@@ -37,16 +46,15 @@ export interface GenerateOptions {
   userConfig?: Partial<UserConfig>;
   dialerProxyGroups?: DialerProxyGroup[];
   customProxyGroups?: CustomProxyGroup[];
-  filteredProxyGroups?: FilteredProxyGroup[];
-  moduleRuleOverrides?: Record<string, ModuleRuleOverride[]>;
-  moduleRuleExclusions?: ModuleRuleExclusions;
+  customRuleSets?: CustomRuleSet[];
+  proxyGroupAdvanced?: Record<string, ProxyGroupAdvancedConfig>;
+  builtinRuleEdits?: BuiltinRuleEdits;
   proxyGroupNameOverrides?: Record<string, string>;
   proxyGroupOrder?: string[];
+  groupListeners?: GroupListenerBinding[];
 }
 
-type BaseConfig = Record<string, unknown> & {
-  "global-client-fingerprint"?: unknown;
-};
+type BaseConfig = Record<string, unknown>;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -105,7 +113,11 @@ function assertNoGeneratedSectionsInBaseConfig(baseConfig: Record<string, unknow
 }
 
 function omitGeneratedSections(baseConfig: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(baseConfig).filter(([key, value]) => value !== undefined && !GENERATED_CONFIG_SECTION_KEYS.has(key)));
+  return Object.fromEntries(
+    Object.entries(baseConfig).filter(
+      ([key, value]) => value !== undefined && !GENERATED_CONFIG_SECTION_KEYS.has(key)
+    )
+  );
 }
 
 function normalizeBaseConfigPatch(baseConfig: Record<string, unknown>): Record<string, unknown> {
@@ -175,9 +187,9 @@ export function generateClashConfig(options: GenerateOptions): ClashConfig {
     userConfig = {},
     dialerProxyGroups = [],
     customProxyGroups = [],
-    filteredProxyGroups = [],
-    moduleRuleOverrides,
-    moduleRuleExclusions,
+    customRuleSets = [],
+    proxyGroupAdvanced = {},
+    builtinRuleEdits,
     proxyGroupNameOverrides,
   } = options;
   
@@ -202,9 +214,7 @@ export function generateClashConfig(options: GenerateOptions): ClashConfig {
   assertNoGeneratedSectionsInBaseConfig(baseConfig);
   const baseConfigRecord = baseConfig as unknown as Record<string, unknown>;
   const shouldUseDefaultBaseSections = !hasExplicitBaseConfigYaml;
-
-  // mihomo 已将 global-client-fingerprint 标记为 deprecated；这里规范化到每个 proxy 的 client-fingerprint。
-  const globalClientFingerprint =
+  const baseConfigClientFingerprint =
     typeof baseConfigRecord["global-client-fingerprint"] === "string" && baseConfigRecord["global-client-fingerprint"].trim()
       ? String(baseConfigRecord["global-client-fingerprint"]).trim()
       : undefined;
@@ -215,26 +225,20 @@ export function generateClashConfig(options: GenerateOptions): ClashConfig {
     if (!node || typeof node !== "object") return node;
     const typed = node as unknown as Record<string, unknown>;
     const type = typeof typed.type === "string" ? typed.type : "";
-
     const hasClientFingerprint =
       typeof typed["client-fingerprint"] === "string" && Boolean(String(typed["client-fingerprint"]).trim());
     const supportsClientFingerprint = type === "vmess" || type === "vless" || type === "trojan" || type === "anytls";
-
-    const nextBase = (() => {
-      if (!supportsClientFingerprint) return typed;
-      if (hasClientFingerprint) return typed;
-      if (!globalClientFingerprint) return typed;
-
-      // 根据官方文档：client-fingerprint 仅对 VMess/VLESS/Trojan/AnyTLS 生效；其中 Trojan/AnyTLS 为 TLS 协议。
-      const shouldApply =
-        type === "trojan" ||
+    const shouldApplyBaseFingerprint =
+      Boolean(baseConfigClientFingerprint) &&
+      supportsClientFingerprint &&
+      !hasClientFingerprint &&
+      (type === "trojan" ||
         type === "anytls" ||
         (typeof typed.tls === "boolean" && typed.tls) ||
-        (type === "vless" && Boolean(typed["reality-opts"]));
-
-      if (!shouldApply) return typed;
-      return { ...typed, "client-fingerprint": globalClientFingerprint };
-    })();
+        (type === "vless" && Boolean(typed["reality-opts"])));
+    const nextBase = shouldApplyBaseFingerprint
+      ? { ...typed, "client-fingerprint": baseConfigClientFingerprint }
+      : typed;
 
     if (type !== "vless") return nextBase as unknown as ParsedNode;
     return normalizeMihomoVlessForGeneration(nextBase) as unknown as ParsedNode;
@@ -283,18 +287,19 @@ export function generateClashConfig(options: GenerateOptions): ClashConfig {
   };
 
   const nodeNameSet = new Set(uniqueNodes.map((n) => n.name));
-  const filteredGroupNameSet = new Set<string>(
-    filteredProxyGroups.filter((g) => g && g.enabled && typeof g.name === "string" && g.name.trim()).map((g) => g.name.trim())
-  );
-  const customGroupNameSet = new Set<string>(
-    customProxyGroups.filter((g) => g && typeof g.name === "string" && g.name.trim()).map((g) => g.name.trim())
-  );
-  const moduleGroupNameSet = new Set<string>(
-    PROXY_GROUP_MODULES.map((mod) => resolveProxyGroupModuleName(mod, proxyGroupNameOverrides?.[mod.id]))
-  );
+  const activeCustomProxyGroups = customProxyGroups.filter((g) => g && g.enabled !== false);
+  const validRelayGroupNames = getValidDialerRelayGroupNames({
+    customProxyGroups,
+    enabledGroups: config.enabledGroups,
+    proxyGroupNameOverrides,
+  });
   const enabledDialerProxyGroups = dialerProxyGroups.filter((g) => g && g.enabled !== false);
   const sanitizedDialerProxyGroups = enabledDialerProxyGroups.length > 0
-    ? sanitizeDialerProxyGroups(enabledDialerProxyGroups, nodeNameSet, filteredGroupNameSet)
+    ? sanitizeDialerProxyGroups(
+        enabledDialerProxyGroups,
+        nodeNameSet,
+        validRelayGroupNames
+      )
     : [];
 
   // 应用 dialer-proxy 到目标节点（基于最终输出的唯一节点名）
@@ -305,9 +310,7 @@ export function generateClashConfig(options: GenerateOptions): ClashConfig {
     "DIRECT",
     ...nodeNameSet,
     ...proxyProviderNames,
-    ...moduleGroupNameSet,
-    ...filteredGroupNameSet,
-    ...customGroupNameSet,
+    ...validRelayGroupNames,
     ...sanitizedDialerProxyGroups.map((g) => g.name.trim()).filter(Boolean),
   ]);
   const outputNodes = allNodes.map((node) => {
@@ -354,9 +357,9 @@ export function generateClashConfig(options: GenerateOptions): ClashConfig {
     testUrl: config.testUrl,
     testInterval: config.testInterval,
     customProxyGroups,
-    filteredProxyGroups,
-    moduleRuleOverrides,
-    moduleRuleExclusions,
+    customRuleSets,
+    proxyGroupAdvanced,
+    builtinRuleEdits,
     cnIpNoResolve: config.cnIpNoResolve,
     experimentalCnUseCnRuleSet: config.experimentalCnUseCnRuleSet,
     proxyGroupNameOverrides,
@@ -414,17 +417,10 @@ export function generateClashConfig(options: GenerateOptions): ClashConfig {
     }
 
     const customNameToKey = new Map<string, string>();
-    for (const g of customProxyGroups) {
+    for (const g of activeCustomProxyGroups) {
       const name = typeof g.name === "string" ? g.name.trim() : "";
       if (!name) continue;
       customNameToKey.set(name, `custom:${g.id}`);
-    }
-
-    const filteredNameToKey = new Map<string, string>();
-    for (const g of filteredProxyGroups) {
-      const name = typeof g.name === "string" ? g.name.trim() : "";
-      if (!name) continue;
-      filteredNameToKey.set(name, `filtered:${g.id}`);
     }
 
     const dialerNameToKey = new Map<string, string>();
@@ -437,7 +433,6 @@ export function generateClashConfig(options: GenerateOptions): ClashConfig {
     const getKeyByName = (name: string) => {
       return (
         dialerNameToKey.get(name) ||
-        filteredNameToKey.get(name) ||
         customNameToKey.get(name) ||
         moduleNameToKey.get(name) ||
         `name:${name}`
@@ -483,10 +478,78 @@ export function generateClashConfig(options: GenerateOptions): ClashConfig {
     availablePolicyTargets
   );
   const resolvedListeners = (() => {
-    if (!listeners) return baseTopLevelPatch.listeners;
-    if (baseTopLevelPatch.listeners === undefined) return listeners;
-    if (Array.isArray(baseTopLevelPatch.listeners)) return [...baseTopLevelPatch.listeners, ...listeners];
-    throw new BaseConfigYamlError("基础和 DNS 配置中的 listeners 必须是数组，才能与节点监听端口合并。");
+    const baseListeners = baseTopLevelPatch.listeners;
+    if (baseListeners !== undefined && !Array.isArray(baseListeners)) {
+      throw new BaseConfigYamlError("基础和 DNS 配置中的 listeners 必须是数组，才能与节点监听端口合并。");
+    }
+    const baseListenerArray = Array.isArray(baseListeners) ? (baseListeners as Array<Record<string, unknown>>) : [];
+
+    // 分组监听：按稳定 ID 解析目标策略组（module/custom/dialer），改名后依然有效
+    const groupListenerEntries = (() => {
+      const bindings = Array.isArray(options.groupListeners) ? options.groupListeners : [];
+      if (bindings.length === 0) return [];
+
+      const finalGroupNames = new Set(proxyGroups.map((g) => g.name));
+      const resolveTarget = (binding: GroupListenerBinding): GroupListenerTargetResolution => {
+        const target = binding?.target;
+        if (!target || typeof target !== "object" || typeof target.id !== "string") {
+          return { exists: false, active: false };
+        }
+        if (target.kind === "module") {
+          const mod = PROXY_GROUP_MODULES.find((m) => m.id === target.id);
+          if (!mod) return { exists: false, active: false };
+          const name = resolveProxyGroupModuleName(mod, proxyGroupNameOverrides?.[mod.id]);
+          return { exists: true, active: finalGroupNames.has(name), name };
+        }
+        if (target.kind === "custom") {
+          const group = customProxyGroups.find((g) => g && g.id === target.id);
+          if (!group) return { exists: false, active: false };
+          const name = typeof group.name === "string" ? group.name.trim() : "";
+          return { exists: true, active: group.enabled !== false && finalGroupNames.has(name), name };
+        }
+        if (target.kind === "dialer") {
+          const group = dialerProxyGroups.find((g) => g && g.id === target.id);
+          if (!group) return { exists: false, active: false };
+          const name = typeof group.name === "string" ? group.name.trim() : "";
+          return { exists: true, active: group.enabled !== false && finalGroupNames.has(name), name };
+        }
+        return { exists: false, active: false };
+      };
+
+      // 最终生效的 mixed-port：基础 YAML patch 里的值即最终写入配置的值
+      const patchMixedPort = baseTopLevelPatch["mixed-port"];
+      const effectiveMixedPort = typeof patchMixedPort === "number" ? patchMixedPort : undefined;
+
+      const collectPorts = (list: Array<Record<string, unknown>> | undefined) =>
+        (list ?? [])
+          .map((l) => (l && typeof l === "object" ? l.port : undefined))
+          .filter((p): p is number => typeof p === "number");
+      const collectNames = (list: Array<Record<string, unknown>> | undefined) =>
+        (list ?? [])
+          .map((l) => (l && typeof l === "object" && typeof l.name === "string" ? l.name : ""))
+          .filter(Boolean);
+
+      return resolveGroupListenerEntries({
+        bindings,
+        resolveTarget,
+        effectiveMixedPort,
+        nodeListenerPorts: listeners ? listeners.map((l) => l.port) : [],
+        baseListenerPorts: collectPorts(baseListenerArray),
+        usedNames: new Set([
+          ...(listeners ? listeners.map((l) => l.name) : []),
+          ...collectNames(baseListenerArray),
+        ]),
+      });
+    })();
+
+    const generatedListeners = [
+      ...(listeners ?? []),
+      ...groupListenerEntries,
+    ];
+
+    if (generatedListeners.length === 0) return baseListeners;
+    if (baseListeners === undefined) return generatedListeners;
+    return [...baseListenerArray, ...generatedListeners];
   })();
 
   const mergedProxyProviders = (() => {

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { isPrivateOrReservedIp } from "./ssrf-ip";
+import {
+  isBenchmarkReservedIp,
+  isPrivateOrReservedIp,
+  normalizeResolvedIpAddresses,
+  selectDnsAddressesAfterFakeIpRecheck,
+  shouldRecheckFakeIpDnsAnswers,
+} from "./ssrf-ip";
 
 describe("SSRF IP classification", () => {
   it("marks private, reserved, and documentation IPv4 ranges as unsafe", () => {
@@ -30,6 +36,7 @@ describe("SSRF IP classification", () => {
       "::",
       "0:0:0:0:0:0:0:0",
       "::1",
+      "0:0:0:0:0:0:0:1",
       "fc00::1",
       "fd00::1",
       "fe80::1",
@@ -37,8 +44,20 @@ describe("SSRF IP classification", () => {
       "ff00::1",
       "2001:db8::1",
       "2001:0db8::1",
+      "100::1",
+      "100:0:0:1::1",
+      "2001:2::1",
+      "3fff::1",
+      "5f00::1",
+      "4000::1",
       "::ffff:127.0.0.1",
       "::ffff:c0a8:1",
+      "0:0:0:0:0:ffff:7f00:1",
+      "0:0:0:0:0:ffff:c0a8:1",
+      "::127.0.0.1",
+      "64:ff9b::127.0.0.1",
+      "64:ff9b:1:7f00:0:100::",
+      "2002:7f00:1::",
     ]) {
       expect(isPrivateOrReservedIp(ip), ip).toBe(true);
     }
@@ -46,5 +65,39 @@ describe("SSRF IP classification", () => {
     expect(isPrivateOrReservedIp("2001:db80::1")).toBe(false);
     expect(isPrivateOrReservedIp("::ffff:8.8.8.8")).toBe(false);
     expect(isPrivateOrReservedIp("::ffff:808:808")).toBe(false);
+    expect(isPrivateOrReservedIp("::8.8.8.8")).toBe(false);
+    expect(isPrivateOrReservedIp("64:ff9b::8.8.8.8")).toBe(false);
+    expect(isPrivateOrReservedIp("2002:0808:0808::")).toBe(false);
+    expect(isPrivateOrReservedIp("2001:3::1")).toBe(false);
+    expect(isPrivateOrReservedIp("2001:4:112::1")).toBe(false);
+  });
+
+  it("identifies the benchmark range commonly used by fake-ip DNS", () => {
+    expect(isBenchmarkReservedIp("198.18.0.1")).toBe(true);
+    expect(isBenchmarkReservedIp("198.19.255.254")).toBe(true);
+    expect(isBenchmarkReservedIp("198.20.0.1")).toBe(false);
+    expect(isBenchmarkReservedIp("10.0.0.1")).toBe(false);
+    expect(isBenchmarkReservedIp("example.test")).toBe(false);
+  });
+
+  it("normalizes resolved addresses before validation", () => {
+    expect(normalizeResolvedIpAddresses([" 198.18.3.6 ", "", "  ", 123 as never, "8.8.8.8"])).toEqual([
+      "198.18.3.6",
+      "8.8.8.8",
+    ]);
+  });
+
+  it("rechecks only fake-ip DNS answers and selects DoH results conservatively", () => {
+    expect(shouldRecheckFakeIpDnsAnswers(["198.18.3.6"])).toBe(true);
+    expect(shouldRecheckFakeIpDnsAnswers(["198.18.3.6", "198.19.1.1"])).toBe(true);
+    expect(shouldRecheckFakeIpDnsAnswers(["198.18.3.6", "10.0.0.1"])).toBe(false);
+    expect(shouldRecheckFakeIpDnsAnswers(["8.8.8.8"])).toBe(false);
+    expect(shouldRecheckFakeIpDnsAnswers([])).toBe(false);
+
+    expect(selectDnsAddressesAfterFakeIpRecheck(["198.18.3.6"], [" 93.184.216.34 "])).toEqual([
+      "93.184.216.34",
+    ]);
+    expect(selectDnsAddressesAfterFakeIpRecheck(["198.18.3.6"], [])).toEqual(["198.18.3.6"]);
+    expect(selectDnsAddressesAfterFakeIpRecheck(["8.8.8.8"], ["1.1.1.1"])).toEqual(["8.8.8.8"]);
   });
 });

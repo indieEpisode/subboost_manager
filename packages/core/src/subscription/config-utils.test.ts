@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   buildGenerateOptionsFromConfig,
-  extractModuleRuleExclusions,
-  extractModuleRuleOverrides,
   getEffectiveTestOptions,
 } from "./config-utils";
+import { generateClashConfig } from "@subboost/core/generator";
 import type { ParsedNode } from "@subboost/core/types/node";
 
 function node(patch: Partial<ParsedNode> = {}): ParsedNode {
@@ -21,37 +20,6 @@ function node(patch: Partial<ParsedNode> = {}): ParsedNode {
 }
 
 describe("subscription config utils", () => {
-  it("extracts valid module rule overrides and exclusions only", () => {
-    expect(
-      extractModuleRuleOverrides({
-        moduleRuleOverrides: {
-          " cn ": [
-            { id: " direct-cn ", name: " Direct CN ", path: " geosite/cn.mrs " },
-            { id: "ip-cn", path: "geoip/cn.mrs" },
-            { id: "", path: "geosite/empty.mrs" },
-            { id: "bad", path: "https://example.com/bad.yaml" },
-          ],
-          empty: [{ id: "", path: "" }],
-          skip: "bad",
-        },
-      })
-    ).toEqual({
-      cn: [
-        { id: "direct-cn", name: "Direct CN", behavior: "domain", path: "geosite/cn.mrs" },
-        { id: "ip-cn", name: "ip-cn", behavior: "ipcidr", path: "geoip/cn.mrs", noResolve: true },
-      ],
-    });
-
-    expect(
-      extractModuleRuleExclusions({
-        moduleRuleExclusions: {
-          " cn ": [" direct-cn ", "direct-cn", "", 123],
-          bad: "not-list",
-        },
-      })
-    ).toEqual({ cn: ["direct-cn"] });
-  });
-
   it("normalizes effective test options with guarded fallbacks", () => {
     expect(getEffectiveTestOptions({ testUrl: " https://cp.cloudflare.com ", testInterval: 120 })).toEqual({
       testUrl: "https://cp.cloudflare.com",
@@ -76,37 +44,41 @@ describe("subscription config utils", () => {
           {
             id: "media",
             name: "Media",
-            emoji: "M",
+            emoji: "",
+            memberSource: "filtered-nodes",
+            includeInGroupMembers: false,
             groupType: "load-balance",
             strategy: "bad",
-            rules: [
-              { id: "youtube", name: "YouTube", behavior: "domain", url: "https://rules.example.com/youtube.mrs" },
-              { id: "", name: "Bad", behavior: "domain", url: "" },
-            ],
+          },
+          {
+            id: "disabled",
+            name: "Disabled",
+            emoji: "D",
+            enabled: false,
+            description: "Hidden group",
+            memberSource: "bad",
+            includeInGroupMembers: true,
+            groupType: "select",
+          },
+        ],
+        customRuleSets: [
+          {
+            id: "youtube",
+            name: "YouTube",
+            behavior: "domain",
+            path: "https://rules.example.com/youtube.mrs",
+            target: "Media",
           },
         ],
         dialerProxyGroups: [
           {
             id: "chain",
             name: "Chain",
-            type: "url-test",
+            type: "load-balance",
+            strategy: "round-robin",
             enabled: true,
             relayNodes: [" Relay ", ""],
             targetNodes: [" Target "],
-          },
-        ],
-        filteredProxyGroups: [
-          {
-            id: "filtered",
-            name: "Filtered",
-            enabled: true,
-            groupType: "load-balance",
-            strategy: "round-robin",
-            sourceIds: ["airport"],
-            regions: ["US", "bad"],
-            includeRegex: " Fast ",
-            excludeRegex: " IPv6 ",
-            excludedNodeNames: [" Slow "],
           },
         ],
         listenerPorts: {
@@ -156,31 +128,137 @@ describe("subscription config utils", () => {
     });
     expect(options.customProxyGroups?.[0]).toMatchObject({
       id: "media",
+      emoji: "",
+      memberSource: "filtered-nodes",
+      includeInGroupMembers: false,
       strategy: "consistent-hashing",
-      rules: [{ id: "youtube", name: "YouTube" }],
+    });
+    expect(options.customProxyGroups?.[1]).toMatchObject({
+      id: "disabled",
+      enabled: false,
+      description: "Hidden group",
+      includeInGroupMembers: true,
+    });
+    expect(options.customProxyGroups?.[1]).not.toHaveProperty("memberSource");
+    expect(options.customRuleSets?.[0]).toMatchObject({
+      id: "youtube",
+      name: "YouTube",
+      target: "Media",
+      path: "https://rules.example.com/youtube.mrs",
     });
     expect(options.dialerProxyGroups?.[0]).toMatchObject({
       id: "chain",
+      type: "load-balance",
+      strategy: "round-robin",
       relayNodes: ["Relay"],
       targetNodes: ["Target"],
-    });
-    expect(options.filteredProxyGroups?.[0]).toMatchObject({
-      id: "filtered",
-      strategy: "round-robin",
-      regions: ["us"],
-      includeRegex: "Fast",
-      excludeRegex: "IPv6",
-      excludedNodeNames: ["Slow"],
     });
     expect(options.proxyGroupNameOverrides).toEqual({ auto: "Auto" });
     expect(options.proxyGroupOrder).toEqual(["auto"]);
   });
 
-  it("drops malformed persisted config while keeping safe defaults", () => {
-    expect(extractModuleRuleOverrides({ moduleRuleOverrides: null })).toBeUndefined();
-    expect(extractModuleRuleOverrides({ moduleRuleOverrides: { " ": [] } })).toBeUndefined();
-    expect(extractModuleRuleExclusions({ moduleRuleExclusions: {} })).toBeUndefined();
+  it("generates from effective nodes while matching persisted original names", () => {
+    const kept = node({ name: "Singapore", _originName: "SG Premium" });
+    const excluded = node({ name: "Pinned Hong Kong", _originName: "HK IPLC" });
+    const options = buildGenerateOptionsFromConfig(
+      {
+        nodeNameFilter: {
+          enabled: true,
+          excludeRegexes: ["^hk"],
+        },
+      },
+      { nodes: [kept, excluded] }
+    );
 
+    expect(options.nodes).toHaveLength(1);
+    expect(options.nodes[0]).toMatchObject({
+      name: "Singapore",
+      _originName: "SG Premium",
+    });
+    expect(options.nodes[0]).not.toHaveProperty("dialer-proxy");
+  });
+
+  it("temporarily ignores filtered listener and dialer references and restores them when disabled", () => {
+    const nodes = [
+      node({ name: "Relay", _originName: "Relay" }),
+      node({ name: "Target", _originName: "Target" }),
+    ];
+    const config = {
+      nodeNameFilter: {
+        enabled: true,
+        excludeRegexes: ["^target$"],
+      },
+      listenerPorts: {
+        Relay: 12000,
+        Target: 12001,
+      },
+      dialerProxyGroups: [
+        {
+          id: "chain",
+          name: "Chain",
+          enabled: true,
+          type: "select",
+          relayNodes: ["Relay"],
+          targetNodes: ["Target"],
+        },
+      ],
+    };
+
+    const filteredOptions = buildGenerateOptionsFromConfig(config, { nodes });
+    const filtered = generateClashConfig(filteredOptions);
+    expect(filteredOptions.userConfig?.listenerPorts).toEqual(config.listenerPorts);
+    expect(filteredOptions.dialerProxyGroups?.[0]).toMatchObject({
+      relayNodes: ["Relay"],
+      targetNodes: ["Target"],
+    });
+    expect(filtered.proxies?.map((proxy) => proxy.name)).toEqual(["Relay"]);
+    expect(filtered.listeners).toEqual([
+      { name: "mixed0", type: "mixed", port: 12000, proxy: "Relay" },
+    ]);
+    expect(filtered["proxy-groups"]?.find((group) => group.name === "Chain")).toMatchObject({
+      proxies: ["Relay"],
+    });
+
+    const restored = generateClashConfig(
+      buildGenerateOptionsFromConfig(
+        {
+          ...config,
+          nodeNameFilter: {
+            ...config.nodeNameFilter,
+            enabled: false,
+          },
+        },
+        { nodes }
+      )
+    );
+    expect(restored.proxies?.map((proxy) => proxy.name)).toEqual(["Relay", "Target"]);
+    expect(restored.proxies?.find((proxy) => proxy.name === "Target")).toMatchObject({
+      "dialer-proxy": "Chain",
+    });
+    expect(restored.listeners).toEqual([
+      { name: "mixed0", type: "mixed", port: 12000, proxy: "Relay" },
+      { name: "mixed1", type: "mixed", port: 12001, proxy: "Target" },
+    ]);
+    expect(restored["proxy-groups"]?.find((group) => group.name === "Chain")).toMatchObject({
+      proxies: ["Relay"],
+    });
+  });
+
+  it("rejects invalid persisted node-name filters", () => {
+    expect(() =>
+      buildGenerateOptionsFromConfig(
+        {
+          nodeNameFilter: {
+            enabled: true,
+            excludeRegexes: ["(a+)+$"],
+          },
+        },
+        { nodes: [node()] }
+      )
+    ).toThrow("节点名称过滤配置无效");
+  });
+
+  it("drops malformed persisted config while keeping safe defaults", () => {
     const options = buildGenerateOptionsFromConfig(
       {
         template: "bad",
@@ -195,23 +273,17 @@ describe("subscription config utils", () => {
         customProxyGroups: [
           "bad",
           { id: "", name: "Bad", emoji: "B", groupType: "select" },
-          { id: "fallback", name: "Fallback", emoji: "F", groupType: "fallback", rules: ["bad"] },
+          { id: "fallback", name: "Fallback", emoji: "F", groupType: "fallback" },
           { id: "direct", name: "Direct", emoji: "D", groupType: "direct-first" },
           { id: "reject", name: "Reject", emoji: "R", groupType: "reject-first" },
         ],
-        dialerProxyGroups: ["bad", { id: "bad", name: "Bad", type: "fallback" }],
-        filteredProxyGroups: [
+        customRuleSets: [
           "bad",
-          { id: "", name: "Bad", enabled: true },
-          {
-            id: "select-default",
-            name: "Select Default",
-            enabled: false,
-            groupType: "unknown",
-            emoji: "S",
-            regions: "us",
-          },
+          { id: "", name: "Bad", behavior: "domain", path: "geosite/bad.mrs", target: "Fallback" },
+          { id: "bad-behavior", name: "Bad", behavior: "bad", path: "geosite/bad.mrs", target: "Fallback" },
+          { id: "bad-path", name: "Bad", behavior: "domain", path: "plain.txt", target: "Fallback" },
         ],
+        dialerProxyGroups: ["bad", { id: "bad", name: "Bad", type: "bad" }],
         listenerPorts: "bad",
         proxyGroupNameOverrides: "bad",
         proxyGroupOrder: [],
@@ -241,13 +313,6 @@ describe("subscription config utils", () => {
       "direct-first",
       "reject-first",
     ]);
-    expect(options.filteredProxyGroups?.[0]).toMatchObject({
-      id: "select-default",
-      enabled: false,
-      groupType: "select",
-      regions: [],
-      emoji: "S",
-    });
     expect(options.dialerProxyGroups).toBeUndefined();
     expect(options.proxyGroupNameOverrides).toBeUndefined();
     expect(options.proxyGroupOrder).toBeUndefined();
@@ -261,11 +326,6 @@ describe("subscription config utils", () => {
           { id: "select", name: "Select", emoji: "S", groupType: "select" },
           { id: "url-test", name: "Auto", emoji: "A", groupType: "url-test" },
         ],
-        filteredProxyGroups: [
-          { id: "fallback", name: "Fallback", enabled: true, groupType: "fallback", sourceIds: [123, "airport"] },
-          { id: "direct", name: "Direct", enabled: true, groupType: "direct-first", regions: ["HK", "other"] },
-          { id: "reject", name: "Reject", enabled: true, groupType: "reject-first" },
-        ],
       },
       { nodes: [node()] }
     );
@@ -273,13 +333,249 @@ describe("subscription config utils", () => {
 
     expect(minimal.template).toBe("minimal");
     expect(standard.template).toBe("standard");
-    expect(minimal.customProxyGroups?.map((group) => group.groupType)).toEqual(["select", "url-test"]);
-    expect(minimal.filteredProxyGroups?.map((group) => group.groupType)).toEqual([
-      "fallback",
-      "direct-first",
-      "reject-first",
+    expect(minimal.customProxyGroups?.map((group) => group.groupType)).toEqual([
+      "select",
+      "url-test",
     ]);
-    expect(minimal.filteredProxyGroups?.[0].sourceIds).toEqual(["airport"]);
-    expect(minimal.filteredProxyGroups?.[1].regions).toEqual(["hk", "other"]);
   });
+
+  it("preserves empty YAML overrides and normalizes advanced proxy-group config", () => {
+    const options = buildGenerateOptionsFromConfig(
+      {
+        dnsYaml: "",
+        customRules: [
+          {
+            type: "IP-CIDR6",
+            value: "2001:db8::/32",
+            target: { kind: "custom", id: " media " },
+            noResolve: true,
+          },
+        ],
+        customProxyGroups: [
+          {
+            id: "media",
+            name: "Media",
+            emoji: "",
+            groupType: "load-balance",
+            strategy: "round-robin",
+            advanced: {
+              sourceIds: [" source-a ", "source-a"],
+              regions: ["jp", "bad"],
+              extraMembers: [{ kind: "direct" }],
+            },
+          },
+        ],
+        proxyGroupAdvanced: {
+          " auto ": {
+            groupType: "fallback",
+            excludedMembers: [{ kind: "node", name: " Node " }],
+          },
+          " ": { groupType: "select" },
+          invalid: { regions: ["bad"] },
+        },
+        listenerPorts: {
+          http: 1,
+          zero: 0,
+          high: 65536,
+          float: 1200.5,
+        },
+      },
+      { nodes: [node()] }
+    );
+
+    expect(options.userConfig?.dnsYaml).toBe("");
+    expect(options.userConfig?.customRules?.[0]).toMatchObject({
+      type: "IP-CIDR6",
+      target: { kind: "custom", id: "media" },
+      noResolve: true,
+    });
+    expect(options.userConfig?.listenerPorts).toEqual({ http: 1 });
+    expect(options.customProxyGroups?.[0]).toMatchObject({
+      id: "media",
+      groupType: "load-balance",
+      strategy: "round-robin",
+      advanced: {
+        sourceIds: ["source-a"],
+        regions: ["jp"],
+        extraMembers: [{ kind: "direct" }],
+      },
+    });
+    expect(options.proxyGroupAdvanced).toEqual({
+      auto: {
+        groupType: "fallback",
+        excludedMembers: [{ kind: "node", name: "Node" }],
+      },
+    });
+  });
+
+  it("keeps only valid optional persisted collections", () => {
+    const options = buildGenerateOptionsFromConfig(
+      {
+        enabledGroups: [null, " ", "auto"],
+        enabledRules: "bad",
+        customRules: "bad",
+        customProxyGroups: [
+          null,
+          { id: " ", name: "Bad", groupType: "select" },
+          { id: "bad", name: "Bad", groupType: "bad" },
+          {
+            id: "select",
+            name: " Select ",
+            emoji: null,
+            groupType: "select",
+            enabled: true,
+            description: "",
+            memberSource: "filtered-nodes",
+            includeInGroupMembers: "yes",
+          },
+          {
+            id: "balance",
+            name: "Balance",
+            emoji: "B",
+            groupType: "load-balance",
+            strategy: "consistent-hashing",
+            advanced: "bad",
+          },
+        ],
+        dialerProxyGroups: [
+          null,
+          { id: "bad", name: "Bad", type: "bad" },
+          {
+            id: "select-dialer",
+            name: "Select Dialer",
+            type: "select",
+            enabled: false,
+            relayNodes: "bad",
+            targetNodes: [" target-a ", 1, ""],
+          },
+          {
+            id: "balance-dialer",
+            name: "Balance Dialer",
+            type: "load-balance",
+            strategy: "bad",
+          },
+        ],
+        listenerPorts: {
+          " ": 12000,
+          stringPort: "12001",
+          valid: 12002,
+        },
+        proxyGroupNameOverrides: {
+          " ": "Name",
+          valid: " Valid Name ",
+        },
+        ruleOrder: "bad",
+      },
+      { nodes: [node()] }
+    );
+
+    expect(options.userConfig?.enabledGroups).toEqual(["auto"]);
+    expect(options.userConfig).not.toHaveProperty("enabledRules");
+    expect(options.userConfig).not.toHaveProperty("customRules");
+    expect(options.userConfig?.listenerPorts).toEqual({ valid: 12002 });
+    expect(options.customProxyGroups).toEqual([
+      {
+        advanced: {},
+        emoji: "",
+        groupType: "select",
+        id: "select",
+        memberSource: "filtered-nodes",
+        name: "Select",
+      },
+      {
+        advanced: {},
+        emoji: "B",
+        groupType: "load-balance",
+        id: "balance",
+        name: "Balance",
+        strategy: "consistent-hashing",
+      },
+    ]);
+    expect(options.dialerProxyGroups).toEqual([
+      {
+        enabled: false,
+        id: "select-dialer",
+        name: "Select Dialer",
+        relayNodes: [],
+        targetNodes: ["target-a"],
+        type: "select",
+      },
+      {
+        id: "balance-dialer",
+        name: "Balance Dialer",
+        relayNodes: [],
+        strategy: "consistent-hashing",
+        targetNodes: [],
+        type: "load-balance",
+      },
+    ]);
+    expect(options.proxyGroupNameOverrides).toEqual({ valid: "Valid Name" });
+  });
+
+  it("omits empty optional maps and preserves a valid persisted rule order", () => {
+    const options = buildGenerateOptionsFromConfig(
+      {
+        customRules: [
+          {
+            id: "custom-rule",
+            type: "DOMAIN-SUFFIX",
+            value: "example.com",
+            target: "DIRECT",
+          },
+        ],
+        ruleOrder: ["custom-rule"],
+        listenerPorts: {
+          emptyName: "bad",
+          invalid: 65536,
+        },
+        proxyGroupNameOverrides: {
+          empty: " ",
+        },
+        customProxyGroups: [
+          { id: "missing-name", name: " ", emoji: "", groupType: "select" },
+          { id: "missing-type", name: "Missing Type", emoji: "" },
+        ],
+        dialerProxyGroups: [
+          { id: "", name: "Bad", type: "select" },
+          { id: "bad-name", name: " ", type: "select" },
+        ],
+      },
+      { nodes: [node()] },
+    );
+
+    expect(options.userConfig?.ruleOrder).toEqual(["custom-rule:custom-rule"]);
+    expect(options.userConfig).not.toHaveProperty("listenerPorts");
+    expect(options.proxyGroupNameOverrides).toBeUndefined();
+    expect(options.customProxyGroups).toBeUndefined();
+    expect(options.dialerProxyGroups).toBeUndefined();
+  });
+
+  it("restores persisted group listeners with stable targets and drops malformed entries", () => {
+    const options = buildGenerateOptionsFromConfig(
+      {
+        groupListeners: [
+          { id: "gl-1", target: { kind: "module", id: "auto" }, port: 7891 },
+          { id: "gl-2", target: { kind: "custom", id: "c1" }, port: 7892, enabled: false, allowLan: true },
+          // 同目标重复：仅保留首条
+          { id: "gl-dup", target: { kind: "module", id: "auto" }, port: 7899 },
+          // 非法条目：全部丢弃
+          { id: "gl-bad-kind", target: { kind: "node", id: "n1" }, port: 7893 },
+          { id: "gl-bad-port", target: { kind: "dialer", id: "d1" }, port: 70000 },
+          { id: "gl-no-target", port: 7894 },
+          { target: { kind: "dialer", id: "d2" }, port: 7895 },
+        ],
+      },
+      { nodes: [node()] },
+    );
+
+    expect(options.groupListeners).toEqual([
+      { id: "gl-1", target: { kind: "module", id: "auto" }, port: 7891 },
+      { id: "gl-2", target: { kind: "custom", id: "c1" }, port: 7892, enabled: false, allowLan: true },
+      { id: "group_listener_7", target: { kind: "dialer", id: "d2" }, port: 7895 },
+    ]);
+
+    // 无 groupListeners 时不携带该字段
+    expect(buildGenerateOptionsFromConfig({}, { nodes: [node()] })).not.toHaveProperty("groupListeners");
+  });
+
 });

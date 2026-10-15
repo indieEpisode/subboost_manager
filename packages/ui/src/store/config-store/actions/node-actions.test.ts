@@ -87,6 +87,38 @@ describe("createNodeActions", () => {
     });
   });
 
+  it("keeps separate deleted-node records for duplicate origin names", () => {
+    const { actions, getState } = createHarness({
+      nodes: [
+        node("SOCKS-same.example.com:1080", {
+          _originName: "SOCKS-same.example.com:1080",
+          password: "one",
+        }),
+        node("SOCKS-same.example.com:1080 (2)", {
+          _originName: "SOCKS-same.example.com:1080",
+          password: "two",
+        }),
+      ],
+    });
+
+    actions.removeNode("SOCKS-same.example.com:1080");
+    actions.removeNode("SOCKS-same.example.com:1080 (2)");
+
+    expect(getState().deletedNodeNames).toEqual(["SOCKS-same.example.com:1080"]);
+    expect(getState().deletedNodes).toEqual([
+      expect.objectContaining({
+        originName: "SOCKS-same.example.com:1080",
+        name: "SOCKS-same.example.com:1080",
+        node: expect.objectContaining({ password: "one" }),
+      }),
+      expect.objectContaining({
+        originName: "SOCKS-same.example.com:1080",
+        name: "SOCKS-same.example.com:1080 (2)",
+        node: expect.objectContaining({ password: "two" }),
+      }),
+    ]);
+  });
+
   it("handles missing remove targets and restore metadata without cached nodes", () => {
     const { actions, getState } = createHarness({
       nodes: [node("Existing")],
@@ -270,6 +302,47 @@ describe("createNodeActions", () => {
     actions.setNodeOrder("missing", 2);
     actions.setNodeOrder("B", Number.NaN);
     expect(getState().nodes.map((item: ParsedNode) => item.name)).toEqual(["C", "B", "A"]);
+  });
+
+  it("reorders only scoped node slots while preserving hidden node positions", () => {
+    const { actions, getState } = createHarness({
+      nodes: [
+        node("A"),
+        node("Hidden 1"),
+        node("B"),
+        node("Hidden 2"),
+        node("C"),
+      ],
+    });
+    const effectiveNodeNames = ["A", "B", "C"];
+
+    actions.setNodeOrder("C", 1, effectiveNodeNames);
+    expect(getState().nodes.map((item: ParsedNode) => item.name)).toEqual([
+      "C",
+      "Hidden 1",
+      "A",
+      "Hidden 2",
+      "B",
+    ]);
+
+    actions.setNodeOrder("C", 3, effectiveNodeNames);
+    expect(getState().nodes.map((item: ParsedNode) => item.name)).toEqual([
+      "A",
+      "Hidden 1",
+      "B",
+      "Hidden 2",
+      "C",
+    ]);
+
+    actions.setNodeOrder("Hidden 1", 2, effectiveNodeNames);
+    actions.setNodeOrder("A", 2, []);
+    expect(getState().nodes.map((item: ParsedNode) => item.name)).toEqual([
+      "A",
+      "Hidden 1",
+      "B",
+      "Hidden 2",
+      "C",
+    ]);
   });
 
   it("bulk renames nodes and listener ports without duplicate names", () => {

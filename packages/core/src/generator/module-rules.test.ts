@@ -7,9 +7,9 @@ import {
   getModuleRuleOrderKey,
   isModuleRuleMovedFrom,
   isPresetModuleRule,
-  normalizeModuleRuleExclusions,
+  normalizeHiddenPresetRuleIds,
 } from "./module-rules";
-import type { ProxyGroupModule, ProxyGroupRule } from "./proxy-group-modules";
+import type { ProxyGroupModule, ProxyGroupRule } from "@subboost/core/generator/proxy-group-modules";
 
 const proxyModule: ProxyGroupModule = {
   id: "media",
@@ -30,15 +30,15 @@ const customRules: ProxyGroupRule[] = [
 ];
 
 describe("module rule helpers", () => {
-  it("normalizes exclusions and resolves excluded ids", () => {
+  it("normalizes hidden preset rule ids and resolves excluded ids", () => {
     expect(
-      normalizeModuleRuleExclusions({
+      normalizeHiddenPresetRuleIds({
         " media ": [" youtube ", "youtube", "", 123],
         skip: "bad",
       })
     ).toEqual({ media: ["youtube"] });
-    expect(normalizeModuleRuleExclusions(null)).toEqual({});
-    expect(normalizeModuleRuleExclusions([])).toEqual({});
+    expect(normalizeHiddenPresetRuleIds(null)).toEqual({});
+    expect(normalizeHiddenPresetRuleIds([])).toEqual({});
     expect([...getExcludedModuleRuleIds(" media ", { media: [" youtube ", ""] })]).toEqual(["youtube"]);
     expect([...getExcludedModuleRuleIds("   ", { media: ["youtube"] })]).toEqual([]);
   });
@@ -78,14 +78,24 @@ describe("module rule helpers", () => {
     ]);
   });
 
-  it("detects rules moved to another module or custom group", () => {
+  it("detects rules moved to another module", () => {
+    expect(isModuleRuleMovedFrom("media", "youtube")).toBe(false);
+    expect(isModuleRuleMovedFrom("media", "youtube", { other: [null as never, { id: "hulu" }] })).toBe(false);
     expect(isModuleRuleMovedFrom("media", "youtube", { other: [{ id: "youtube" }] })).toBe(true);
     expect(isModuleRuleMovedFrom("media", "youtube", { media: [{ id: "youtube" }] })).toBe(false);
-    expect(isModuleRuleMovedFrom("media", "youtube", undefined, [{ rules: [{ id: "youtube" }] }])).toBe(true);
     expect(isModuleRuleMovedFrom("", "youtube", { other: [{ id: "youtube" }] })).toBe(false);
     expect(isModuleRuleMovedFrom("media", " ", { other: [{ id: "youtube" }] })).toBe(false);
-    expect(isModuleRuleMovedFrom("media", "youtube", { other: "bad" as never }, [{ rules: "bad" as never }])).toBe(
-      false
-    );
+    expect(isModuleRuleMovedFrom("media", "youtube", { other: "bad" as never })).toBe(false);
+  });
+
+  it("preserves the preset label for incoming rules and keeps user additions custom", () => {
+    const incoming = { ...customRules[1], source: "preset" as const };
+    const target = { ...proxyModule, rules: [] };
+    expect(getEffectiveModuleRuleItems(target, { media: [incoming, customRules[0]] })
+      .map(({ id, source }) => ({ id, source }))).toEqual([
+      { id: "hulu", source: "preset" },
+      { id: "netflix", source: "custom" },
+    ]);
+    expect(getEffectiveModuleRules(target, { media: [incoming] })).toEqual([customRules[1]]);
   });
 });

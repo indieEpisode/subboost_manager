@@ -51,18 +51,19 @@ function meaningfulState(overrides: Record<string, unknown> = {}) {
       },
     ],
     nodes: [{ name: "Node A" }],
+    nodeNameFilter: { enabled: true, excludeRegexes: ["expire", "test"] },
     deletedNodeNames: ["Gone"],
     deletedNodes: [{ originName: "Gone", name: "Gone" }],
     customRules: [{ id: "rule-1", type: "DOMAIN", value: "example.com", target: "Proxy" }],
-    customProxyGroups: [{ id: "custom-1", name: "Custom", rules: [] }],
-    filteredProxyGroups: [{ id: "filtered-1", name: "Filtered", enabled: true }],
-    moduleRuleOverrides: { ai: [{ id: "custom-ai", path: "geosite/custom-ai.mrs" }] },
-    moduleRuleExclusions: { ai: ["openai"] },
+    customProxyGroups: [{ id: "custom-1", name: "Custom", emoji: "", groupType: "select" }],
+    proxyGroupAdvanced: { ai: { includeRegex: "AI" } },
+    proxyGroupAdvancedModeEnabled: true,
+    customRuleSets: [{ id: "custom-ai", name: "Custom AI", behavior: "domain", path: "geosite/custom-ai.mrs", target: "🤖 Labs" }],
+    builtinRuleEdits: { "module:ai:openai": { enabled: false } },
     dialerProxyGroups: [{ id: "dialer-1", name: "Relay", relayNodes: ["Node A"], targetNodes: [] }],
     proxyGroupNameOverrides: { ai: "Labs" },
     proxyGroupOrder: ["module:ai"],
     ruleOrder: ["module:ai:openai"],
-    allRulesOrderEditingEnabled: true,
     moduleRuleEditWarningAccepted: true,
     appliedTemplateId: "template-1",
     template: "full",
@@ -77,6 +78,7 @@ function meaningfulState(overrides: Record<string, unknown> = {}) {
     cnIpNoResolve: false,
     experimentalCnUseCnRuleSet: true,
     listenerPorts: { "Node A": 41000 },
+    groupListeners: [{ id: "gl-1", target: { kind: "module", id: "auto" }, port: 7891 }],
     ...overrides,
   } as any;
 }
@@ -142,20 +144,21 @@ describe("auth config handoff", () => {
         }),
       ],
       nodes: [{ name: "Node A" }],
+      nodeNameFilter: { enabled: true, excludeRegexes: ["expire", "test"] },
       deletedNodeNames: ["Gone"],
       deletedNodes: [{ originName: "Gone", name: "Gone" }],
       template: "full",
       enabledProxyGroups: ["select", "auto", "ai"],
       hiddenProxyGroups: ["youtube"],
       customRules: [{ id: "rule-1", type: "DOMAIN", value: "example.com", target: "Proxy" }],
-      customProxyGroups: [{ id: "custom-1", name: "Custom", rules: [] }],
-      filteredProxyGroups: [{ id: "filtered-1", name: "Filtered", enabled: true }],
-      moduleRuleOverrides: { ai: [{ id: "custom-ai", path: "geosite/custom-ai.mrs" }] },
-      moduleRuleExclusions: { ai: ["openai"] },
+      customProxyGroups: [{ id: "custom-1", name: "Custom", emoji: "", groupType: "select" }],
+      proxyGroupAdvanced: { ai: { includeRegex: "AI" } },
+      proxyGroupAdvancedModeEnabled: true,
+      customRuleSets: [{ id: "custom-ai", name: "Custom AI", behavior: "domain", path: "geosite/custom-ai.mrs", target: "🤖 Labs" }],
+      builtinRuleEdits: { "module:ai:openai": { enabled: false } },
       proxyGroupNameOverrides: { ai: "Labs" },
       proxyGroupOrder: ["module:ai"],
       ruleOrder: ["module:ai:openai"],
-      allRulesOrderEditingEnabled: true,
       moduleRuleEditWarningAccepted: true,
       appliedTemplateId: "template-1",
       dnsYaml: "dns: {}",
@@ -167,6 +170,7 @@ describe("auth config handoff", () => {
       cnIpNoResolve: false,
       experimentalCnUseCnRuleSet: true,
       listenerPorts: { "Node A": 41000 },
+      groupListeners: [{ id: "gl-1", target: { kind: "module", id: "auto" }, port: 7891 }],
     });
     expect(storage.removeItem).toHaveBeenCalledWith(AUTH_CONFIG_HANDOFF_STORAGE_NAME);
   });
@@ -243,21 +247,32 @@ describe("auth config handoff", () => {
         state: {
           sources: [{ id: "bad", type: "bad", content: "x" }],
           nodes: [{ name: "Node" }, "bad"],
+          nodeNameFilter: {
+            enabled: true,
+            excludeRegexes: ["  expire  ", "expire", "", 42],
+          },
           deletedNodeNames: ["Gone", 1],
           deletedNodes: [{ originName: "Gone" }],
           template: "bad",
           enabledProxyGroups: ["select", 1],
           hiddenProxyGroups: "bad",
           customProxyGroups: [{ id: "custom" }],
-          filteredProxyGroups: [{ id: "filtered" }],
-          moduleRuleOverrides: { ai: [] },
-          moduleRuleExclusions: { ai: ["openai"] },
+          proxyGroupAdvancedModeEnabled: true,
+          customRuleSets: [
+            {
+              id: "custom-ai",
+              name: "Custom AI",
+              behavior: "domain",
+              path: "geosite/custom-ai.mrs",
+              target: "Labs",
+            },
+          ],
+          builtinRuleEdits: { "module:ai:openai": { enabled: false } },
           customRules: [{ id: "rule" }],
           dialerProxyGroups: [{ id: "dialer" }],
           proxyGroupNameOverrides: { ai: "Labs", bad: 1 },
           proxyGroupOrder: ["module:ai", 1],
           ruleOrder: ["rule", 2],
-          allRulesOrderEditingEnabled: true,
           moduleRuleEditWarningAccepted: false,
           appliedTemplateId: null,
           dnsYaml: "dns: {}",
@@ -277,18 +292,26 @@ describe("auth config handoff", () => {
     const consumed = consumeAuthConfigHandoff();
 
     expect(consumed).toEqual({
+      nodeNameFilter: { enabled: false, excludeRegexes: [] },
       deletedNodeNames: ["Gone"],
       deletedNodes: [{ originName: "Gone" }],
       enabledProxyGroups: ["select"],
-      customProxyGroups: [{ id: "custom" }],
-      filteredProxyGroups: [{ id: "filtered" }],
-      moduleRuleOverrides: { ai: [] },
-      moduleRuleExclusions: { ai: ["openai"] },
+      customProxyGroups: [],
+      proxyGroupAdvancedModeEnabled: true,
+      customRuleSets: [
+        {
+          id: "custom-ai",
+          name: "Custom AI",
+          behavior: "domain",
+          path: "geosite/custom-ai.mrs",
+          target: "Labs",
+        },
+      ],
+      builtinRuleEdits: { "module:ai:openai": { enabled: false } },
       customRules: [{ id: "rule" }],
       dialerProxyGroups: [{ id: "dialer" }],
       proxyGroupOrder: ["module:ai"],
       ruleOrder: ["rule"],
-      allRulesOrderEditingEnabled: true,
       moduleRuleEditWarningAccepted: false,
       appliedTemplateId: null,
       dnsYaml: "dns: {}",
@@ -299,6 +322,13 @@ describe("auth config handoff", () => {
       cnIpNoResolve: false,
       experimentalCnUseCnRuleSet: true,
     });
+  });
+
+  it("preserves a disabled keep-only draft and its switches across authentication", () => {
+    installStorage(createStorage());
+    const nodeNameFilter = { enabled: false, includeEnabled: false, excludeEnabled: true, includeRegexes: ["日本"], excludeRegexes: [] };
+    captureAuthConfigHandoff({ ...structuredClone(initialState), nodeNameFilter });
+    expect(consumeAuthConfigHandoff()?.nodeNameFilter).toEqual(nodeNameFilter);
   });
 
   it("normalizes valid sources while dropping invalid optional source fields", () => {
@@ -327,6 +357,7 @@ describe("auth config handoff", () => {
 
     expect(consumed).toEqual({
       sources: [{ id: "source-1", type: "url", content: "https://example.com/sub" }],
+      nodeNameFilter: { enabled: false, excludeRegexes: [] },
     });
   });
 });

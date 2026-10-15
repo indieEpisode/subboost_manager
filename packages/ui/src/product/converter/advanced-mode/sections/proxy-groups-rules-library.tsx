@@ -15,26 +15,26 @@ import {
 import { toast } from "@subboost/ui/components/ui/toaster";
 import { cn } from "@subboost/ui/lib/utils";
 import { PROXY_GROUP_MODULES } from "@subboost/core/generator/proxy-groups";
-import { getEffectiveModuleRules } from "@subboost/core/generator/module-rules";
+import { getModuleRuleOrderKey } from "@subboost/core/generator/module-rules";
 import { resolveProxyGroupModuleName } from "@subboost/core/proxy-group-name";
+import { resolveProxyGroupTargetName } from "@subboost/core/proxy-group-targets";
+import { normalizeRuleSetPathInput } from "@subboost/core/rules/rule-model";
 import { RULE_CATEGORIES, type RuleSetInfo } from "@subboost/core/rules/metadata";
 import { useConfigStore } from "@subboost/ui/store/config-store";
 import { useProductInteractionAdapter } from "@subboost/ui/product/interactions";
 import { ProxyGroupsAddedRuleSets } from "./proxy-groups-added-rule-sets";
-import { getRuleDisplayName, replaceRuleProviderBase, useRulesLibrarySearch } from "./proxy-groups-rules-search";
+import { getRuleDisplayName, useRulesLibrarySearch } from "./proxy-groups-rules-search";
 
 export function ProxyGroupsRulesLibrary() {
   const {
-    ruleProviderBaseUrl,
     enabledProxyGroups,
     hiddenProxyGroups,
     toggleProxyGroup,
-    moduleRuleOverrides,
-    moduleRuleExclusions,
+    customRuleSets = [],
+    builtinRuleEdits = {},
     addModuleRules,
-    customProxyGroups,
-    updateCustomProxyGroup,
-    proxyGroupNameOverrides,
+    customProxyGroups = [],
+    proxyGroupNameOverrides = {},
   } = useConfigStore();
   const interactions = useProductInteractionAdapter();
 
@@ -63,24 +63,44 @@ export function ProxyGroupsRulesLibrary() {
     const hidden = new Set(hiddenProxyGroups);
     return PROXY_GROUP_MODULES.filter((module) => !hidden.has(module.id));
   }, [hiddenProxyGroups]);
+  const activeCustomProxyGroups = React.useMemo(
+    () => customProxyGroups.filter((group) => group.enabled !== false),
+    [customProxyGroups],
+  );
+  const moduleNames = React.useMemo(
+    () =>
+      Object.fromEntries(
+        PROXY_GROUP_MODULES.map((module) => [
+          module.id,
+          resolveModuleFullName(module),
+        ]),
+      ),
+    [resolveModuleFullName],
+  );
 
   React.useEffect(() => {
-    if (!addToGroupId.startsWith("module:")) return;
-    const moduleId = addToGroupId.slice("module:".length);
-    if (visibleProxyGroupModules.some((module) => module.id === moduleId)) return;
+    if (addToGroupId.startsWith("module:")) {
+      const moduleId = addToGroupId.slice("module:".length);
+      if (visibleProxyGroupModules.some((module) => module.id === moduleId)) return;
+    } else if (addToGroupId.startsWith("custom:")) {
+      const groupId = addToGroupId.slice("custom:".length);
+      if (activeCustomProxyGroups.some((group) => group.id === groupId)) return;
+    } else {
+      return;
+    }
     setAddToGroupId("");
-  }, [addToGroupId, visibleProxyGroupModules]);
+  }, [activeCustomProxyGroups, addToGroupId, visibleProxyGroupModules]);
 
   return (
     <div className="min-w-0 space-y-2">
       <div className="flex min-h-5 items-center gap-2">
-        <span className="text-xs font-medium text-white/80">
+        <span className="text-xs font-medium text-fg-80">
           方法一：搜索规则集
         </span>
         <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-1.5 py-0 text-[9px] font-medium leading-4 text-amber-200">
           推荐
         </span>
-        <span className="text-[10px] text-white/40 ml-auto">
+        <span className="text-[10px] text-fg-40 ml-auto">
           {ruleSearchKeyword.trim() && typeof totalMatched === "number"
             ? `匹配 ${totalMatched} · ${totalRules ? `${totalRules} 规则` : "规则库"}`
             : totalRules
@@ -90,17 +110,17 @@ export function ProxyGroupsRulesLibrary() {
       </div>
       <div className="space-y-2">
         <div className="relative">
-          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white/30" />
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-fg-30" />
           <Input
             value={ruleSearchKeyword}
             onChange={(e) => setRuleSearchKeyword(e.target.value)}
             placeholder="搜索: Netflix、Google、Steam、Telegram..."
-            className="pl-7 text-xs h-7 bg-white/5 border-white/10"
+            className="pl-7 text-xs h-7 bg-ink/5 border-ink/10"
           />
         </div>
 
         {rulesSearchLoading && (
-          <div className="flex items-center justify-center gap-1 text-[10px] text-white/40 py-1">
+          <div className="flex items-center justify-center gap-1 text-[10px] text-fg-40 py-1">
             <Loader2 className="h-3 w-3 animate-spin" />
             搜索中...
           </div>
@@ -112,19 +132,37 @@ export function ProxyGroupsRulesLibrary() {
         )}
 
         {searchResults.length > 0 && (
-          <div className="max-h-64 overflow-y-auto custom-scrollbar space-y-0.5 bg-white/5 rounded p-1.5 border border-white/10">
+          <div className="max-h-64 overflow-y-auto custom-scrollbar space-y-0.5 bg-ink/5 rounded p-1.5 border border-ink/10">
             {searchResults.map((rule) => {
               const categoryInfo = RULE_CATEGORIES[rule.category];
-              const belongsToModule = visibleProxyGroupModules.find((m) => {
-                return getEffectiveModuleRules(
-                  m,
-                  moduleRuleOverrides,
-                  moduleRuleExclusions,
-                ).some((r) => r.id === rule.id);
-              });
-              const belongsToCustom = customProxyGroups.find((g) =>
-                g.rules.some((r) => r.id === rule.id),
+              const builtinSourceModule = visibleProxyGroupModules.find((m) =>
+                (m.rules ?? []).some((r) => r.id === rule.id && builtinRuleEdits?.[getModuleRuleOrderKey(m.id, r.id)]?.enabled !== false),
               );
+              const builtinTargetName = builtinSourceModule
+                ? builtinRuleEdits?.[getModuleRuleOrderKey(builtinSourceModule.id, rule.id)]?.target ||
+                  resolveModuleFullName(builtinSourceModule)
+                : "";
+              const resolvedBuiltinTargetName = builtinSourceModule
+                ? resolveProxyGroupTargetName(builtinTargetName, {
+                    moduleNames,
+                    customProxyGroups: activeCustomProxyGroups,
+                    fallbackTarget: resolveModuleFullName(builtinSourceModule),
+                  })
+                : "";
+              const belongsToModule = builtinTargetName
+                ? visibleProxyGroupModules.find((m) => resolveModuleFullName(m) === resolvedBuiltinTargetName)
+                : null;
+              const customRuleSet = customRuleSets.find((item) => item.id === rule.id);
+              const belongsToCustom = customRuleSet
+                ? activeCustomProxyGroups.find(
+                    (g) =>
+                      g.name ===
+                      resolveProxyGroupTargetName(customRuleSet.target, {
+                        moduleNames,
+                        customProxyGroups: activeCustomProxyGroups,
+                      }),
+                  )
+                : null;
               const isModuleEnabled = belongsToModule
                 ? enabledProxyGroups.includes(belongsToModule.id)
                 : false;
@@ -143,18 +181,18 @@ export function ProxyGroupsRulesLibrary() {
                   >
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1">
-                        <span className="text-[11px] font-medium truncate text-white">
+                        <span className="text-[11px] font-medium truncate text-fg">
                           {getRuleDisplayName(rule)}
                         </span>
                         <Badge
                           variant="outline"
-                          className="text-[9px] px-1 py-0 text-white/50"
+                          className="text-[9px] px-1 py-0 text-fg-50"
                         >
                           {rule.behavior === "ipcidr" ? "IP" : "域名"}
                         </Badge>
                       </div>
                       <div className="flex items-center gap-1 mt-0.5">
-                        <span className="text-[9px] text-white/50">属于</span>
+                        <span className="text-[9px] text-fg-50">属于</span>
                         <span className="text-[9px] font-medium text-indigo-400">
                           {resolveModuleFullName(belongsToModule)}
                         </span>
@@ -187,18 +225,18 @@ export function ProxyGroupsRulesLibrary() {
                   >
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1">
-                        <span className="text-[11px] font-medium truncate text-white">
+                        <span className="text-[11px] font-medium truncate text-fg">
                           {getRuleDisplayName(rule)}
                         </span>
                         <Badge
                           variant="outline"
-                          className="text-[9px] px-1 py-0 text-white/50"
+                          className="text-[9px] px-1 py-0 text-fg-50"
                         >
                           {rule.behavior === "ipcidr" ? "IP" : "域名"}
                         </Badge>
                       </div>
                       <div className="flex items-center gap-1 mt-0.5">
-                        <span className="text-[9px] text-white/50">属于</span>
+                        <span className="text-[9px] text-fg-50">属于</span>
                         <span className="text-[9px] font-medium text-indigo-400">
                           {belongsToCustom.name}
                         </span>
@@ -213,7 +251,8 @@ export function ProxyGroupsRulesLibrary() {
               }
 
               return (
-                <div
+                <button
+                  type="button"
                   key={rule.id}
                   onClick={() => {
                     if (isSelected) {
@@ -225,10 +264,10 @@ export function ProxyGroupsRulesLibrary() {
                     }
                   }}
                   className={cn(
-                    "flex items-center gap-1.5 px-1.5 py-1 rounded cursor-pointer transition-colors",
+                    "flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left transition-colors",
                     isSelected
                       ? "bg-indigo-500/20 text-indigo-400"
-                      : "hover:bg-white/5 text-white/70",
+                      : "hover:bg-ink/5 text-fg-70",
                   )}
                 >
                   <div
@@ -236,7 +275,7 @@ export function ProxyGroupsRulesLibrary() {
                       "h-3.5 w-3.5 rounded border flex items-center justify-center flex-shrink-0",
                       isSelected
                         ? "bg-indigo-500 border-indigo-500"
-                        : "border-white/30",
+                        : "border-ink/30",
                     )}
                   >
                     {isSelected && <Check className="h-2.5 w-2.5 text-white" />}
@@ -246,7 +285,7 @@ export function ProxyGroupsRulesLibrary() {
                   </span>
                   <Badge
                     variant="outline"
-                    className="text-[9px] px-1 py-0 text-white/40 flex-shrink-0"
+                    className="text-[9px] px-1 py-0 text-fg-40 flex-shrink-0"
                   >
                     {categoryInfo?.name || rule.category}
                   </Badge>
@@ -256,7 +295,7 @@ export function ProxyGroupsRulesLibrary() {
                   >
                     {rule.behavior === "ipcidr" ? "IP" : "域名"}
                   </Badge>
-                </div>
+                </button>
               );
             })}
           </div>
@@ -268,14 +307,14 @@ export function ProxyGroupsRulesLibrary() {
           searchResults.length === 0 &&
           typeof totalMatched === "number" &&
           totalMatched === 0 && (
-            <p className="text-[10px] text-white/40 text-center py-2">
+            <p className="text-[10px] text-fg-40 text-center py-2">
               未找到相关规则
             </p>
           )}
 
         {ruleSearchKeyword.trim() && searchResults.length > 0 && (
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-white/40">
+            <span className="text-[10px] text-fg-40">
               {typeof totalMatched === "number"
                 ? `显示 ${searchResults.length}/${totalMatched}`
                 : `显示 ${searchResults.length}`}
@@ -288,7 +327,7 @@ export function ProxyGroupsRulesLibrary() {
                 size="sm"
                 onClick={handleLoadMore}
                 disabled={rulesSearchLoadingMore || rulesSearchLoading}
-                className="h-6 text-[10px] px-2 border-white/20 text-white/70 hover:bg-white/10"
+                className="h-6 text-[10px] px-2 border-ink/20 text-fg-70 hover:bg-ink/10"
               >
                 {rulesSearchLoadingMore && (
                   <Loader2 className="h-3 w-3 animate-spin mr-1" />
@@ -302,26 +341,29 @@ export function ProxyGroupsRulesLibrary() {
         {selectedRules.length > 0 && (
           <div className="space-y-2 bg-indigo-500/10 rounded p-2 border border-indigo-500/30">
             <div className="flex items-center justify-between">
-              <span className="text-[10px] text-white/70">
+              <span className="text-[10px] text-fg-70">
                 已选择{" "}
                 <span className="text-indigo-400 font-medium">
                   {selectedRules.length}
                 </span>{" "}
                 条未分配的规则
               </span>
-              <button
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
                 onClick={() => setSelectedRules([])}
-                className="text-[10px] text-white/40 hover:text-white/60"
+                className="h-auto p-0 text-[10px] text-fg-40 hover:bg-transparent hover:text-fg-60"
               >
                 清空
-              </button>
+              </Button>
             </div>
             <div className="flex flex-wrap gap-0.5">
               {selectedRules.slice(0, 5).map((rule) => (
                 <Badge
                   key={rule.id}
                   variant="secondary"
-                  className="text-[10px] cursor-pointer hover:bg-white/20 px-1.5 py-0"
+                  className="text-[10px] cursor-pointer hover:bg-ink/20 px-1.5 py-0"
                   onClick={() =>
                     setSelectedRules(
                       selectedRules.filter((r) => r.id !== rule.id),
@@ -340,7 +382,7 @@ export function ProxyGroupsRulesLibrary() {
             </div>
 
             <div className="flex items-center gap-1.5">
-              <span className="text-[10px] text-white/50 flex-shrink-0">
+              <span className="text-[10px] text-fg-50 flex-shrink-0">
                 添加到:
               </span>
               <Select value={addToGroupId} onValueChange={setAddToGroupId}>
@@ -353,7 +395,7 @@ export function ProxyGroupsRulesLibrary() {
                     className="text-xs"
                     disabled
                   >
-                    内置代理组
+                    内置组
                   </SelectItem>
                   {visibleProxyGroupModules.map((m) => (
                     <SelectItem
@@ -369,14 +411,14 @@ export function ProxyGroupsRulesLibrary() {
                     className="text-xs"
                     disabled
                   >
-                    自定义分组
+                    自定义组
                   </SelectItem>
-                  {customProxyGroups.length === 0 ? (
+                  {activeCustomProxyGroups.length === 0 ? (
                     <SelectItem value="__none__" className="text-xs" disabled>
-                      暂无自定义分组
+                      暂无自定义组
                     </SelectItem>
                   ) : (
-                    customProxyGroups.map((g) => (
+                    activeCustomProxyGroups.map((g) => (
                       <SelectItem
                         key={g.id}
                         value={`custom:${g.id}`}
@@ -421,28 +463,41 @@ export function ProxyGroupsRulesLibrary() {
                       ? visibleProxyGroupModules.find((m) => m.id === target.id)
                       : null;
                   if (target.kind === "module" && !targetModule) return;
-
                   const usedRuleIds = new Map<string, string>();
                   for (const m of visibleProxyGroupModules) {
                     const groupName = resolveModuleFullName(m);
-                    for (const r of getEffectiveModuleRules(
-                      m,
-                      moduleRuleOverrides,
-                      moduleRuleExclusions,
-                    )) {
-                      if (!usedRuleIds.has(r.id))
-                        usedRuleIds.set(r.id, groupName);
+                    for (const r of m.rules ?? []) {
+                      const edit = builtinRuleEdits?.[getModuleRuleOrderKey(m.id, r.id)];
+                      if (edit?.enabled === false) continue;
+                      if (!usedRuleIds.has(r.id)) {
+                        usedRuleIds.set(
+                          r.id,
+                          edit?.target
+                            ? resolveProxyGroupTargetName(edit.target, {
+                                moduleNames,
+                                customProxyGroups: activeCustomProxyGroups,
+                                fallbackTarget: groupName,
+                              })
+                            : groupName,
+                        );
+                      }
                     }
                   }
-                  for (const g of customProxyGroups) {
-                    for (const r of g.rules) {
-                      if (!usedRuleIds.has(r.id)) usedRuleIds.set(r.id, g.name);
+                  for (const ruleSet of customRuleSets) {
+                    if (!usedRuleIds.has(ruleSet.id)) {
+                      usedRuleIds.set(
+                        ruleSet.id,
+                        resolveProxyGroupTargetName(ruleSet.target, {
+                          moduleNames,
+                          customProxyGroups: activeCustomProxyGroups,
+                        }),
+                      );
                     }
                   }
 
                   const targetDisplayName =
                     target.kind === "custom"
-                      ? customProxyGroups.find((g) => g.id === target.id)
+                      ? activeCustomProxyGroups.find((g) => g.id === target.id)
                           ?.name || ""
                       : targetModule
                         ? resolveModuleFullName(targetModule)
@@ -479,29 +534,26 @@ export function ProxyGroupsRulesLibrary() {
                   let skippedInvalidCount = 0;
 
                   if (target.kind === "custom") {
-                    const cg = customProxyGroups.find(
-                      (g) => g.id === target.id,
-                    );
-                    if (!cg) return;
-                    const existing = new Set(cg.rules.map((r) => r.id));
+                    const group = activeCustomProxyGroups.find((g) => g.id === target.id);
+                    if (!group) return;
+                    const existing = new Set(customRuleSets.map((r) => r.id));
                     const rulesToAdd = selectedRules
                       .filter((r) => !existing.has(r.id))
-                      .map((rule) => ({
+                      .flatMap((rule) => {
+                        const path = normalizeRuleSetPathInput(rule.url);
+                        if (!path) return [];
+                        return [{
                         id: rule.id,
                         name: rule.nameZh,
                         behavior: rule.behavior,
-                        url: replaceRuleProviderBase(
-                          rule.url,
-                          ruleProviderBaseUrl,
-                        ),
+                        path,
                         noResolve: rule.behavior === "ipcidr",
-                      }));
+                        }];
+                      });
                     skippedExistingCount =
                       selectedRules.length - rulesToAdd.length;
                     if (rulesToAdd.length > 0) {
-                      updateCustomProxyGroup(cg.id, {
-                        rules: [...cg.rules, ...rulesToAdd],
-                      });
+                      addModuleRules(group.id, rulesToAdd);
                       addedCount = rulesToAdd.length;
                     }
                   } else {
@@ -509,11 +561,20 @@ export function ProxyGroupsRulesLibrary() {
                     if (!mod) return;
 
                     const existing = new Set<string>(
-                      getEffectiveModuleRules(
-                        mod,
-                        moduleRuleOverrides,
-                        moduleRuleExclusions,
-                      ).map((r) => r.id),
+                      [
+                        ...(mod.rules ?? [])
+                          .filter((r) => builtinRuleEdits?.[getModuleRuleOrderKey(mod.id, r.id)]?.enabled !== false)
+                          .map((r) => r.id),
+                        ...customRuleSets
+                          .filter(
+                            (rule) =>
+                              resolveProxyGroupTargetName(rule.target, {
+                                moduleNames,
+                                customProxyGroups,
+                              }) === resolveModuleFullName(mod),
+                          )
+                          .map((r) => r.id),
+                      ],
                     );
                     const candidateRules = selectedRules.filter(
                       (r) => !existing.has(r.id),

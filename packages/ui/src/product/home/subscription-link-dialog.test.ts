@@ -136,10 +136,13 @@ describe("SubscriptionLinkDialog", () => {
 
     expect(captures.dialogs[0]).toMatchObject({ open: true });
     expect(html).toContain("生成订阅链接");
+    expect(html).not.toContain("<svg");
     expect(html).toContain("更新时智能匹配节点");
     expect(html).toContain("启用自动更新");
     expect(html).toContain("自动更新间隔");
     expect(html).toContain("注意事项");
+    expect(html).toContain("订阅链接相当于访问凭证，请勿公开分享");
+    expect(html).toContain("客户端高频拉取订阅会被封禁，请合理配置");
     expect(captures.inputs[0]).toMatchObject({ value: "我的配置", maxLength: 100 });
     expect(captures.inputs[1]).toMatchObject({ type: "number", min: 12, step: 1, value: 8 });
     expect(captures.switches).toHaveLength(2);
@@ -170,6 +173,8 @@ describe("SubscriptionLinkDialog", () => {
     expect(html).toContain("订阅链接已更新");
     expect(html).toContain("复制下方链接到 Clash 客户端导入使用");
     expect(html).toContain("更新成功");
+    expect(html).toContain("<svg");
+    expect(html).toContain("订阅链接二维码");
     expect(html).toContain("check-icon");
     expect(captures.inputs[0]).toMatchObject({
       value: "https://sub.example.com/sub/token",

@@ -1,4 +1,5 @@
 import type { ConfigActions } from "../definitions";
+import { parseNodeNameFilterConfig } from "@subboost/core/subscription/node-name-filter";
 import type { GetState, SetAndGenerateConfig, SetState } from "../store-types";
 
 type SettingsActions = Pick<
@@ -9,13 +10,14 @@ type SettingsActions = Pick<
   | "setTestUrl"
   | "setTestInterval"
   | "setRuleProviderBaseUrl"
+  | "setNodeNameFilter"
+  | "setProxyGroupAdvancedModeEnabled"
   | "setCnIpNoResolve"
   | "setExperimentalCnUseCnRuleSet"
-  | "setAllRulesOrderEditingEnabled"
 >;
 
 export function createSettingsActions(
-  set: SetState,
+  _set: SetState,
   _get: GetState,
   setAndGenerateConfig: SetAndGenerateConfig
 ): SettingsActions {
@@ -44,16 +46,22 @@ export function createSettingsActions(
       setAndGenerateConfig(() => ({ ruleProviderBaseUrl: url }));
     },
 
+    setNodeNameFilter: (config) => {
+      setAndGenerateConfig(() => ({
+        nodeNameFilter: parseNodeNameFilterConfig(config),
+      }));
+    },
+
+    setProxyGroupAdvancedModeEnabled: (value: boolean) => {
+      setAndGenerateConfig(() => ({ proxyGroupAdvancedModeEnabled: Boolean(value) }));
+    },
+
     setCnIpNoResolve: (value: boolean) => {
       setAndGenerateConfig(() => ({ cnIpNoResolve: Boolean(value) }));
     },
 
     setExperimentalCnUseCnRuleSet: (value: boolean) => {
       setAndGenerateConfig(() => ({ experimentalCnUseCnRuleSet: Boolean(value) }));
-    },
-
-    setAllRulesOrderEditingEnabled: (enabled: boolean) => {
-      set({ allRulesOrderEditingEnabled: Boolean(enabled) });
     },
   };
 }

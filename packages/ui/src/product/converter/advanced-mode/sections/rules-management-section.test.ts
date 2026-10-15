@@ -45,6 +45,8 @@ vi.mock("@subboost/ui/components/ui/switch", () => ({
 }));
 vi.mock("@subboost/core/generator/rules", () => ({
   buildGeneratedRuleEntries: mocks.buildGeneratedRuleEntries,
+  hasFullRuleOrderKeys: (ruleOrder: string[] | undefined) =>
+    Array.isArray(ruleOrder) && ruleOrder.some((key) => key.startsWith("module:") || key.startsWith("special:")),
 }));
 vi.mock("@subboost/ui/store/config-store", () => ({ useConfigStore: () => mocks.store }));
 vi.mock("../section-header", () => ({
@@ -85,15 +87,13 @@ function renderSection(overrides: Record<string, unknown> = {}) {
     enabledProxyGroups: ["core"],
     customRules: [{ id: "custom" }],
     customProxyGroups: [],
-    moduleRuleOverrides: {},
-    moduleRuleExclusions: {},
+    customRuleSets: [],
+    builtinRuleEdits: {},
     proxyGroupNameOverrides: {},
     cnIpNoResolve: true,
     experimentalCnUseCnRuleSet: true,
-    ruleOrder: ["module:geo", "custom:one"],
+    ruleOrder: ["custom:one"],
     setRuleOrder: vi.fn(),
-    allRulesOrderEditingEnabled: false,
-    setAllRulesOrderEditingEnabled: vi.fn(),
     ...overrides,
   };
   stateMock.setter.mockClear();
@@ -155,9 +155,72 @@ describe("RulesManagementSection", () => {
       expect.objectContaining({
         enabledModules: ["core"],
         cnIpNoResolve: true,
-        ruleOrder: ["module:geo", "custom:one"],
+        ruleOrder: ["custom:one"],
       })
     );
+  });
+
+  it("passes custom proxy groups to the rule builder and renders their full names", () => {
+    const customProxyGroups = [
+      {
+        id: "custom-media",
+        name: "🎬 影音分流",
+        emoji: "🎬",
+        groupType: "select",
+      },
+    ];
+    mocks.buildGeneratedRuleEntries.mockImplementationOnce(
+      (options: { customProxyGroups?: typeof customProxyGroups }) => [
+        {
+          key: "custom-rule-set:media",
+          editable: true,
+          summary: "Elsevier",
+          sourceLabel: "自定义规则集",
+          target: options.customProxyGroups?.[0]?.name ?? "",
+          noResolve: false,
+          text: "RULE-SET,elsevier,🎬 影音分流",
+        },
+      ],
+    );
+
+    const tree = renderSection({ customProxyGroups });
+    const targetBadge = collectElements(
+      tree,
+      (element) =>
+        typeof element.props.className === "string" &&
+        element.props.className.includes("border-indigo-500/30"),
+    )[0];
+
+    expect(mocks.buildGeneratedRuleEntries).toHaveBeenCalledWith(
+      expect.objectContaining({ customProxyGroups }),
+    );
+    expect(collectText(targetBadge)).toBe("🎬 影音分流");
+    expect(targetBadge.props.className).toContain("whitespace-nowrap");
+  });
+
+  it("renders a readable fallback instead of an empty target badge", () => {
+    mocks.entries = [
+      {
+        key: "custom-rule-set:legacy",
+        editable: true,
+        summary: "Legacy",
+        sourceLabel: "自定义规则集",
+        target: "   ",
+        noResolve: false,
+        text: "RULE-SET,legacy,",
+      },
+    ];
+
+    const tree = renderSection();
+    const targetBadges = collectElements(
+      tree,
+      (element) =>
+        typeof element.props.className === "string" &&
+        element.props.className.includes("border-indigo-500/30"),
+    );
+
+    expect(targetBadges).toHaveLength(1);
+    expect(collectText(targetBadges[0])).toBe("目标分流组不可用");
   });
 
   it("keeps visible rule tags out of details and keeps order controls row-based", () => {
@@ -165,11 +228,11 @@ describe("RulesManagementSection", () => {
       {
         key: "custom-rule:ip",
         editable: true,
-        summary: "35.212.230.0/24",
+        summary: "203.0.113.0/24",
         sourceLabel: "自定义规则",
         target: "🚀 节点选择",
         noResolve: false,
-        text: "IP-CIDR,35.212.230.0/24,🚀 节点选择",
+        text: "IP-CIDR,203.0.113.0/24,🚀 节点选择",
       },
       {
         key: "special:match",
@@ -183,7 +246,7 @@ describe("RulesManagementSection", () => {
     ];
 
     const defaultTree = renderSection();
-    const allRulesTree = renderSection({ allRulesOrderEditingEnabled: true });
+    const allRulesTree = renderSection({ ruleOrder: ["custom-rule:ip", "special:match"] });
     const detail = collectElements(
       defaultTree,
       (element) =>
@@ -200,7 +263,7 @@ describe("RulesManagementSection", () => {
       defaultTree,
       (element) =>
         typeof element.props.className === "string" &&
-        element.props.className.includes("border-white/10 bg-white/5 px-3 py-1.5"),
+        element.props.className.includes("border-ink/10 bg-ink/5 px-3 py-1.5"),
     )[0];
     const row = collectElements(
       defaultTree,
@@ -224,16 +287,16 @@ describe("RulesManagementSection", () => {
         element.props.className.includes("min-w-[8.75rem]"),
     )[0];
 
-    expect(collectText(titleLine)).toContain("35.212.230.0/24");
+    expect(collectText(titleLine)).toContain("203.0.113.0/24");
     expect(collectText(titleLine)).toContain("自定义规则");
     expect(collectText(titleLine)).toContain("🚀 节点选择");
-    expect(collectText(titleLine)).not.toContain("IP-CIDR 35.212.230.0/24");
-    expect(collectText(detail)).toBe("IP-CIDR,35.212.230.0/24");
+    expect(collectText(titleLine)).not.toContain("IP-CIDR 203.0.113.0/24");
+    expect(collectText(detail)).toBe("IP-CIDR,203.0.113.0/24");
     expect(collectText(detail)).not.toContain("🚀 节点选择");
     expect(collectText(detail)).not.toContain("no-resolve");
-    expect(detail.props.title).toBe("IP-CIDR,35.212.230.0/24,🚀 节点选择");
-    expect(entryRow.props.className).toContain("border-white/10");
-    expect(entryRow.props.className).toContain("bg-white/5");
+    expect(detail.props.title).toBe("IP-CIDR,203.0.113.0/24,🚀 节点选择");
+    expect(entryRow.props.className).toContain("border-ink/10");
+    expect(entryRow.props.className).toContain("bg-ink/5");
     expect(row.props.className).not.toContain("sm:grid");
     expect(orderControls.props.className).toContain("shrink-0");
     expect(modeRows.map((element) => element.props.className)).toEqual([
@@ -242,31 +305,88 @@ describe("RulesManagementSection", () => {
     ]);
   });
 
+  it("uses fixed source tags for manual rules and searched rule sets", () => {
+    mocks.entries = [
+      {
+        key: "custom-rule:manual",
+        editable: true,
+        summary: "example.com",
+        sourceLabel: "自定义规则",
+        target: "📚 教育学术",
+        noResolve: false,
+        text: "DOMAIN,example.com,📚 教育学术",
+      },
+      {
+        key: "custom-rule-set:google",
+        editable: true,
+        summary: "Google",
+        sourceLabel: "自定义规则集",
+        target: "💬 自定义1",
+        noResolve: false,
+        text: "RULE-SET,google,💬 自定义1",
+      },
+      {
+        key: "module:education:scholar",
+        editable: false,
+        summary: "Scholar",
+        sourceLabel: "📚 教育学术",
+        target: "💬 自定义1",
+        noResolve: false,
+        text: "RULE-SET,scholar,💬 自定义1",
+      },
+      {
+        key: "special:match",
+        editable: false,
+        summary: "兜底规则",
+        sourceLabel: "系统规则",
+        target: "MATCH",
+        noResolve: false,
+        text: "MATCH,DIRECT",
+      },
+    ];
+
+    const text = collectText(renderSection());
+
+    expect(text).toContain("自定义规则");
+    expect(text).toContain("自定义规则集");
+    expect(text).toContain("📚 教育学术");
+    expect(text).toContain("💬 自定义1");
+    expect(text).not.toContain("自定义分组 ·");
+  });
+
   it("confirms before enabling all-rules order mode and disables without confirmation", async () => {
     const switchElement = collectElements(renderSection(), (element) => Boolean((element.props as any).onCheckedChange))[0];
 
     mocks.confirmDialog.mockResolvedValueOnce(false);
     await switchElement.props.onCheckedChange(true);
-    expect(mocks.store.setAllRulesOrderEditingEnabled).not.toHaveBeenCalled();
+    expect(mocks.store.setRuleOrder).not.toHaveBeenCalled();
 
     mocks.confirmDialog.mockResolvedValueOnce(true);
     await switchElement.props.onCheckedChange(true);
-    expect(mocks.store.setAllRulesOrderEditingEnabled).toHaveBeenCalledWith(true);
+    expect(mocks.confirmDialog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "开启“调整所有规则顺序”？",
+        cancelText: "保持默认",
+        confirmText: "继续开启",
+        variant: "warning",
+      })
+    );
+    expect(mocks.store.setRuleOrder).toHaveBeenCalledWith(["module:geo", "custom:one"]);
 
     const enabledSwitch = collectElements(
-      renderSection({ allRulesOrderEditingEnabled: true }),
+      renderSection({ ruleOrder: ["module:geo", "custom:one"] }),
       (element) => Boolean((element.props as any).onCheckedChange)
     )[0];
     await enabledSwitch.props.onCheckedChange(false);
-    expect(mocks.store.setAllRulesOrderEditingEnabled).toHaveBeenCalledWith(false);
+    expect(mocks.store.setRuleOrder).toHaveBeenCalledWith(["custom:one"]);
   });
 
   it("moves editable rules by buttons, absolute order input, blur, and escape cleanup", () => {
     stateMock.value = { "custom:one": "1" };
-    const tree = renderSection();
+    const tree = renderSection({ ruleOrder: ["module:geo", "custom:one"] });
     const orderInputs = collectElements(tree, (element) => (element.props as any).title === "最终规则行号（1=最前）");
-    const upButtons = collectElements(tree, (element) => element.type === "button" && element.props.title === "上移");
-    const downButtons = collectElements(tree, (element) => element.type === "button" && element.props.title === "下移");
+    const upButtons = collectElements(tree, (element) => element.props.label === "上移规则");
+    const downButtons = collectElements(tree, (element) => element.props.label === "下移规则");
 
     orderInputs[1].props.onChange({ target: { value: "2" } });
     expect(stateMock.value["custom:one"]).toBe("2");
@@ -289,20 +409,41 @@ describe("RulesManagementSection", () => {
     expect(mocks.store.setRuleOrder).toHaveBeenCalledWith(["custom:one", "module:geo"]);
   });
 
+  it("does not turn legacy custom-only ordering into full ordering after a custom move", () => {
+    const tree = renderSection({ ruleOrder: ["custom:one"] });
+    const orderInputs = collectElements(tree, (element) => (element.props as any).title === "最终规则行号（1=最前）");
+    const upButtons = collectElements(tree, (element) => element.props.label === "上移规则");
+    const downButtons = collectElements(tree, (element) => element.props.label === "下移规则");
+
+    stateMock.value = { "custom:one": "1" };
+    orderInputs[1].props.onKeyDown({ key: "Enter" });
+    upButtons[1].props.onClick();
+    downButtons[1].props.onClick();
+
+    expect(upButtons[1].props.disabled).toBe(true);
+    expect(downButtons[1].props.disabled).toBe(true);
+    expect(mocks.store.setRuleOrder).not.toHaveBeenCalled();
+  });
+
+  it("uses full non-MATCH ordering for a new empty rule-order state", () => {
+    const tree = renderSection({ ruleOrder: [] });
+    const header = collectElements(tree, (element) => element.props.title === "规则管理")[0];
+    expect(collectText(tree)).toContain("已开启全规则排序");
+    expect(collectText(header.props.badge)).toContain("可调 2 / 全部 3");
+  });
+
   it("keeps collapsed sections lightweight", () => {
     mocks.store = {
       enabledProxyGroups: [],
       customRules: [],
       customProxyGroups: [],
-      moduleRuleOverrides: {},
-      moduleRuleExclusions: {},
+      customRuleSets: [],
+      builtinRuleEdits: {},
       proxyGroupNameOverrides: {},
       cnIpNoResolve: false,
       experimentalCnUseCnRuleSet: false,
       ruleOrder: [],
       setRuleOrder: vi.fn(),
-      allRulesOrderEditingEnabled: false,
-      setAllRulesOrderEditingEnabled: vi.fn(),
     };
     const tree = RulesManagementSection({ isExpanded: false, onToggle: vi.fn() });
     const header = collectElements(tree, (element) => element.props.title === "规则管理")[0];

@@ -3,6 +3,7 @@
 import * as React from "react";
 import { ArrowRight, Check, Pencil, Trash2, X } from "lucide-react";
 import { Button } from "@subboost/ui/components/ui/button";
+import { IconButton } from "@subboost/ui/components/ui/icon-button";
 import { Input } from "@subboost/ui/components/ui/input";
 import {
   Select,
@@ -14,12 +15,15 @@ import {
 import { Switch } from "@subboost/ui/components/ui/switch";
 import { PROXY_GROUP_MODULES } from "@subboost/core/generator/proxy-groups";
 import { resolveProxyGroupModuleName } from "@subboost/core/proxy-group-name";
+import { resolveProxyGroupTargetName } from "@subboost/core/proxy-group-targets";
 import {
   createCustomRuleId,
   CUSTOM_RULE_TYPES,
 } from "@subboost/core/rules/custom-rule-utils";
 import { useConfigStore } from "@subboost/ui/store/config-store";
-import type { CustomRule } from "@subboost/core/types/config";
+import { allocateRuleSetId, parseManualRuleSetUrl } from "@subboost/core/rules/rule-model";
+import { toast } from "@subboost/ui/components/ui/toaster";
+import type { CustomProxyGroup, CustomRule, ProxyGroupRuleTarget } from "@subboost/core/types/config";
 import {
   useProductInteractionAdapter,
   type ProductRuleKind,
@@ -35,6 +39,7 @@ import {
   RULE_HEADER_ACTION_BUTTON_CLASS,
   RULE_HEADER_ROW_CLASS,
   RULE_TEXT_ACTION_BUTTON_CLASS,
+  RULE_TYPE_BADGE_CLASS,
 } from "./proxy-groups-rule-editor-layout";
 
 const CUSTOM_RULE_TYPE_LABELS: Record<CustomRule["type"], string> = {
@@ -48,7 +53,6 @@ const CUSTOM_RULE_TYPE_LABELS: Record<CustomRule["type"], string> = {
   "PROCESS-NAME": "进程名 (PROCESS-NAME)",
   "DST-PORT": "目标端口 (DST-PORT)",
   "SRC-PORT": "源端口 (SRC-PORT)",
-  "RULE-SET": "规则集 (RULE-SET)",
 };
 
 const CUSTOM_RULE_TYPE_SHORT_LABELS: Record<CustomRule["type"], string> = {
@@ -62,7 +66,6 @@ const CUSTOM_RULE_TYPE_SHORT_LABELS: Record<CustomRule["type"], string> = {
   "PROCESS-NAME": "进程名",
   "DST-PORT": "目标端口",
   "SRC-PORT": "源端口",
-  "RULE-SET": "规则集",
 };
 
 const CUSTOM_RULE_TYPE_OPTIONS = CUSTOM_RULE_TYPES.map((value) => ({
@@ -89,21 +92,36 @@ function getTargetOptions(enabledGroupNames: string[], selected?: string) {
   return Array.from(new Set(options));
 }
 
+function toStableRuleTarget(
+  targetName: string,
+  moduleNames: Record<string, string>,
+  customProxyGroups: CustomProxyGroup[],
+): ProxyGroupRuleTarget {
+  const normalized = targetName.trim();
+  for (const [id, name] of Object.entries(moduleNames)) {
+    if (name.trim() === normalized) return { kind: "module", id };
+  }
+  const customGroup = customProxyGroups.find((group) => group.name.trim() === normalized);
+  if (customGroup) return { kind: "custom", id: customGroup.id };
+  return normalized;
+}
+
 export function ProxyGroupsCustomRules() {
   const {
     customRules,
+    customRuleSets = [],
     addCustomRule,
+    addModuleRules,
     addCustomRules,
     updateCustomRule,
     removeCustomRule,
     enabledProxyGroups,
     customProxyGroups,
-    filteredProxyGroups,
     proxyGroupNameOverrides,
   } = useConfigStore();
 
   const [newRuleType, setNewRuleType] =
-    React.useState<CustomRule["type"]>("DOMAIN");
+    React.useState<CustomRule["type"] | "RULE-SET">("DOMAIN");
   const [newRuleValue, setNewRuleValue] = React.useState("");
   const [newRuleTarget, setNewRuleTarget] = React.useState("🚀 节点选择");
   const [newRuleNoResolve, setNewRuleNoResolve] = React.useState(false);
@@ -124,19 +142,32 @@ export function ProxyGroupsCustomRules() {
     for (const g of customProxyGroups) {
       names.push(g.name);
     }
-    for (const g of filteredProxyGroups) {
-      if (!g || !g.enabled) continue;
-      const name = typeof g.name === "string" ? g.name.trim() : "";
-      if (!name) continue;
-      names.push(name);
-    }
     return names;
   }, [
     customProxyGroups,
     enabledProxyGroups,
-    filteredProxyGroups,
     proxyGroupNameOverrides,
   ]);
+
+  const moduleNames = React.useMemo(
+    () =>
+      Object.fromEntries(
+        PROXY_GROUP_MODULES.map((module) => [
+          module.id,
+          resolveProxyGroupModuleName(module, proxyGroupNameOverrides?.[module.id]),
+        ]),
+      ),
+    [proxyGroupNameOverrides],
+  );
+
+  const resolveTargetName = React.useCallback(
+    (target: CustomRule["target"]) =>
+      resolveProxyGroupTargetName(target, {
+        moduleNames,
+        customProxyGroups,
+      }),
+    [customProxyGroups, moduleNames],
+  );
 
   const targetOptions = React.useMemo(
     () => getTargetOptions(enabledGroupNames),
@@ -157,31 +188,59 @@ export function ProxyGroupsCustomRules() {
   const handleAddCustomRule = () => {
     const value = newRuleValue.trim();
     if (!value || !newRuleTarget) return;
+    const addedRuleType = newRuleType;
+
+    if (addedRuleType === "RULE-SET") {
+      const target = toStableRuleTarget(newRuleTarget, moduleNames, customProxyGroups);
+      if (typeof target === "string") {
+        toast({ title: "请选择规则集使用的代理组", variant: "warning" });
+        return;
+      }
+      try {
+        const ruleSet = parseManualRuleSetUrl(value);
+        const id = allocateRuleSetId(ruleSet.name, [
+          ...PROXY_GROUP_MODULES.flatMap((module) => module.rules.map((rule) => rule.id)),
+          ...customRuleSets.map((rule) => rule.id),
+        ]);
+        addModuleRules(target.id, [{ ...ruleSet, id, name: id, noResolve: newRuleNoResolve }]);
+        setNewRuleValue("");
+      } catch (error) {
+        toast({ title: error instanceof Error ? error.message : "规则集链接无效", variant: "warning" });
+      }
+      return;
+    }
 
     addCustomRule({
       id: createCustomRuleId(),
-      type: newRuleType,
+      type: addedRuleType,
       value,
-      target: newRuleTarget,
+      target: toStableRuleTarget(newRuleTarget, moduleNames, customProxyGroups),
       noResolve: newRuleNoResolve,
     });
     interactions.ruleAdded?.({
       source: "manual",
-      kind: getProductRuleKind(newRuleType),
+      kind: getProductRuleKind(addedRuleType),
     });
     setNewRuleValue("");
-    setNewRuleNoResolve(isIpCidrRuleType(newRuleType));
+    setNewRuleNoResolve(isIpCidrRuleType(addedRuleType));
   };
 
   const handleNewRuleTypeChange = (value: string) => {
-    const nextType = value as CustomRule["type"];
+    const nextType = value as CustomRule["type"] | "RULE-SET";
     setNewRuleType(nextType);
-    setNewRuleNoResolve(isIpCidrRuleType(nextType));
+    setNewRuleNoResolve(nextType !== "RULE-SET" && isIpCidrRuleType(nextType));
+    if (nextType === "RULE-SET" && ["DIRECT", "REJECT"].includes(newRuleTarget)) {
+      setNewRuleTarget(enabledGroupNames[0] ?? "");
+    }
   };
 
   const startEditingRule = (rule: CustomRule) => {
     setEditingRuleId(rule.id);
-    setEditingRuleDraft({ ...rule, noResolve: Boolean(rule.noResolve) });
+    setEditingRuleDraft({
+      ...rule,
+      target: resolveTargetName(rule.target),
+      noResolve: Boolean(rule.noResolve),
+    });
   };
 
   const cancelEditingRule = () => {
@@ -197,7 +256,7 @@ export function ProxyGroupsCustomRules() {
     updateCustomRule(editingRuleId, {
       type: editingRuleDraft.type,
       value,
-      target: editingRuleDraft.target,
+      target: toStableRuleTarget(resolveTargetName(editingRuleDraft.target), moduleNames, customProxyGroups),
       noResolve: Boolean(editingRuleDraft.noResolve),
     });
     cancelEditingRule();
@@ -206,7 +265,7 @@ export function ProxyGroupsCustomRules() {
   return (
     <div className="min-w-0 space-y-2">
       <div className={RULE_HEADER_ROW_CLASS}>
-        <span className="text-xs font-medium text-white/80">
+        <span className="text-xs font-medium text-fg-80">
           方法二：手动添加规则
         </span>
         <Button
@@ -228,8 +287,24 @@ export function ProxyGroupsCustomRules() {
         defaultTarget={newRuleTarget}
         defaultNoResolve={newRuleNoResolve}
         targetOptions={batchTargetOptions}
-        existingRules={customRules}
-        onImport={addCustomRules}
+        ruleSetTargetOptions={enabledGroupNames}
+        existingRules={customRules.map((rule) => ({ ...rule, target: resolveTargetName(rule.target) }))}
+        existingRuleSets={customRuleSets.map((rule) => ({ ...rule, target: resolveTargetName(rule.target) }))}
+        reservedRuleSetIds={PROXY_GROUP_MODULES.flatMap((module) => module.rules.map((rule) => rule.id))}
+        onImportRuleSets={(rules) => {
+          for (const rule of rules) {
+            const target = toStableRuleTarget(resolveTargetName(rule.target), moduleNames, customProxyGroups);
+            if (typeof target !== "string") addModuleRules(target.id, [rule]);
+          }
+        }}
+        onImport={(rules) =>
+          addCustomRules(
+            rules.map((rule) => ({
+              ...rule,
+              target: toStableRuleTarget(resolveTargetName(rule.target), moduleNames, customProxyGroups),
+            })),
+          )
+        }
       />
 
       <div className={RULE_ADD_ROW_FRAME_CLASS}>
@@ -241,10 +316,11 @@ export function ProxyGroupsCustomRules() {
             >
               <SelectTrigger className="h-7 w-[112px] max-w-full shrink-0 text-xs">
                 <span className="truncate">
-                  {CUSTOM_RULE_TYPE_SHORT_LABELS[newRuleType]}
+                  {newRuleType === "RULE-SET" ? "规则集" : CUSTOM_RULE_TYPE_SHORT_LABELS[newRuleType]}
                 </span>
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value="RULE-SET" className="text-xs">规则集 (RULE-SET)</SelectItem>
                 {CUSTOM_RULE_TYPE_OPTIONS.map((option) => (
                   <SelectItem
                     key={option.value}
@@ -259,7 +335,7 @@ export function ProxyGroupsCustomRules() {
             <Input
               value={newRuleValue}
               onChange={(e) => setNewRuleValue(e.target.value)}
-              placeholder="值 (如: google.com)"
+              placeholder={newRuleType === "RULE-SET" ? "规则集链接 (https://…/geosite/udemy.mrs)" : "值 (如: google.com)"}
               className="h-7 min-w-0 flex-[1_1_4.5rem] text-xs"
             />
           </div>
@@ -269,19 +345,20 @@ export function ProxyGroupsCustomRules() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {targetOptions.map((target) => (
+                {targetOptions.filter((target) => newRuleType !== "RULE-SET" || !["DIRECT", "REJECT"].includes(target)).map((target) => (
                   <SelectItem key={target} value={target} className="text-xs">
                     {target}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-            <div className="flex h-7 shrink-0 items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2">
+            <div className="flex h-7 shrink-0 items-center gap-1 rounded-lg border border-ink/10 bg-ink/5 px-2">
               <Switch
+                aria-label="新规则不解析域名"
                 checked={newRuleNoResolve}
                 onCheckedChange={setNewRuleNoResolve}
               />
-              <span className="text-[10px] text-white/50">no-resolve</span>
+              <span className="proxy-group-rule-no-resolve-label text-[10px] text-fg-50">no-resolve</span>
             </div>
             <Button
               type="button"
@@ -298,12 +375,12 @@ export function ProxyGroupsCustomRules() {
       </div>
 
       {customRules.length > 0 && (
-        <div className="space-y-1 border-t border-white/10 pt-2">
+        <div className="space-y-1 border-t border-ink/10 pt-2">
           <div className="flex min-h-5 items-center gap-2">
-            <span className="text-[11px] font-medium text-white/65">
+            <span className="text-[11px] font-medium text-fg-65">
               已添加规则
             </span>
-            <span className="ml-auto text-[10px] text-white/40">
+            <span className="ml-auto text-[10px] text-fg-40">
               已添加 {customRules.length}
             </span>
           </div>
@@ -313,7 +390,7 @@ export function ProxyGroupsCustomRules() {
             if (isEditing) {
               const editTargetOptions = getTargetOptions(
                 enabledGroupNames,
-                editingRuleDraft.target,
+                resolveTargetName(editingRuleDraft.target),
               );
 
               return (
@@ -366,7 +443,7 @@ export function ProxyGroupsCustomRules() {
                     </div>
                     <div className={RULE_EDIT_TRAILING_CONTROLS_CLASS}>
                       <Select
-                        value={editingRuleDraft.target}
+                        value={resolveTargetName(editingRuleDraft.target)}
                         onValueChange={(target) =>
                           setEditingRuleDraft((prev) =>
                             prev ? { ...prev, target } : prev,
@@ -390,8 +467,9 @@ export function ProxyGroupsCustomRules() {
                           ))}
                         </SelectContent>
                       </Select>
-                      <div className="flex h-7 shrink-0 items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2">
+                      <div className="flex h-7 shrink-0 items-center gap-1 rounded-lg border border-ink/10 bg-ink/5 px-2">
                         <Switch
+                          aria-label="编辑规则时不解析域名"
                           checked={Boolean(editingRuleDraft.noResolve)}
                           onCheckedChange={(noResolve) =>
                             setEditingRuleDraft((prev) =>
@@ -399,7 +477,7 @@ export function ProxyGroupsCustomRules() {
                             )
                           }
                         />
-                        <span className="text-[10px] text-white/50">
+                        <span className="proxy-group-rule-no-resolve-label text-[10px] text-fg-50">
                           no-resolve
                         </span>
                       </div>
@@ -433,7 +511,7 @@ export function ProxyGroupsCustomRules() {
                             removeCustomRule(index);
                             cancelEditingRule();
                           }}
-                          className="h-7 w-7 shrink-0 p-0 text-white/40 hover:text-red-300"
+                          className="h-7 w-7 shrink-0 p-0 text-fg-40 hover:text-red-300"
                           title="删除规则"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -444,50 +522,54 @@ export function ProxyGroupsCustomRules() {
                 </div>
               );
             }
+            const ruleTargetName =
+              resolveTargetName(rule.target) || "目标分流组不可用";
 
             return (
               <div
                 key={rule.id}
-                className="flex min-w-0 flex-wrap items-center gap-1 rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px]"
+                className="flex min-w-0 flex-wrap items-center gap-1 rounded-md border border-ink/10 bg-ink/[0.04] px-2 py-1 text-[10px]"
               >
-                <span className="rounded border border-indigo-400/20 bg-indigo-500/10 px-1.5 py-0.5 font-medium text-indigo-200">
+                <span className={RULE_TYPE_BADGE_CLASS}>
                   {rule.type}
                 </span>
                 <span
-                  className="min-w-0 max-w-[16rem] truncate text-white/75"
+                  className="min-w-0 max-w-[16rem] truncate text-fg-75"
                   title={rule.value}
                 >
                   {rule.value}
                 </span>
                 {rule.noResolve && (
-                  <span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-white/45">
+                  <span className="rounded border border-ink/10 bg-ink/5 px-1.5 py-0.5 text-fg-45">
                     no-resolve
                   </span>
                 )}
-                <ArrowRight className="h-3 w-3 shrink-0 text-white/35" />
+                <ArrowRight className="h-3 w-3 shrink-0 text-fg-35" />
                 <span
-                  className="max-w-[11rem] truncate rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-white/70"
-                  title={rule.target}
+                  className="max-w-[11rem] truncate rounded border border-ink/10 bg-ink/5 px-1.5 py-0.5 text-fg-70"
+                  title={ruleTargetName}
                 >
-                  {rule.target}
+                  {ruleTargetName}
                 </span>
                 <div className="ml-auto flex shrink-0 items-center gap-0.5">
-                  <button
+                  <IconButton
+                    label="编辑规则"
+                    variant="ghost"
                     type="button"
                     onClick={() => startEditingRule(rule)}
-                    className="inline-flex h-5 w-5 items-center justify-center rounded-md text-white/35 transition-colors hover:bg-white/10 hover:text-white/80"
-                    title="编辑规则"
+                    className="inline-flex h-5 w-5 items-center justify-center rounded-md text-fg-35 transition-colors hover:bg-ink/10 hover:text-fg-80"
                   >
                     <Pencil className="h-3 w-3" />
-                  </button>
-                  <button
+                  </IconButton>
+                  <IconButton
+                    label="删除规则"
+                    variant="ghost"
                     type="button"
                     onClick={() => removeCustomRule(index)}
-                    className="inline-flex h-5 w-5 items-center justify-center rounded-md text-white/30 transition-colors hover:bg-red-500/10 hover:text-red-300"
-                    title="删除规则"
+                    className="inline-flex h-5 w-5 items-center justify-center rounded-md text-fg-30 transition-colors hover:bg-red-500/10 hover:text-red-300"
                   >
                     <Trash2 className="h-3 w-3" />
-                  </button>
+                  </IconButton>
                 </div>
               </div>
             );

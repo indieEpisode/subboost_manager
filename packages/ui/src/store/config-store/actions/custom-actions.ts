@@ -1,11 +1,16 @@
-import type { CustomProxyGroup, CustomRule } from "@subboost/core/types/config";
+import type { BuiltinRuleEdits, CustomProxyGroup, CustomRule } from "@subboost/core/types/config";
 import {
   createCustomRuleId,
   ensureCustomRuleId,
 } from "@subboost/core/rules/custom-rule-utils";
 import { normalizePersistedRuleOrder } from "@subboost/core/generator/rules";
+import { normalizeProxyGroupAdvancedConfig } from "@subboost/core/proxy-group-advanced";
 import type { ConfigActions } from "../definitions";
 import type { GetState, SetAndGenerateConfig, SetState } from "../store-types";
+import {
+  compactBuiltinRuleEdits,
+  ruleTargetMatchesContainer,
+} from "./proxy-group-rule-set-helpers";
 
 type CustomActions = Pick<
   ConfigActions,
@@ -18,6 +23,47 @@ type CustomActions = Pick<
   | "removeCustomProxyGroup"
   | "updateCustomProxyGroup"
 >;
+
+type NormalizeRuleOrderState = {
+  enabledProxyGroups: string[];
+  customProxyGroups: Parameters<typeof normalizePersistedRuleOrder>[0]["customProxyGroups"];
+  customRules: Parameters<typeof normalizePersistedRuleOrder>[0]["customRules"];
+  customRuleSets: Parameters<typeof normalizePersistedRuleOrder>[0]["customRuleSets"];
+  builtinRuleEdits: Parameters<typeof normalizePersistedRuleOrder>[0]["builtinRuleEdits"];
+  proxyGroupNameOverrides: Record<string, string>;
+  experimentalCnUseCnRuleSet: boolean;
+  cnIpNoResolve: boolean;
+  ruleOrder: string[];
+};
+
+function normalizeRuleOrderForState(state: NormalizeRuleOrderState): string[] {
+  return normalizePersistedRuleOrder({
+    enabledModules: state.enabledProxyGroups,
+    customProxyGroups: state.customProxyGroups,
+    customRules: state.customRules,
+    customRuleSets: state.customRuleSets,
+    builtinRuleEdits: state.builtinRuleEdits,
+    proxyGroupNameOverrides: state.proxyGroupNameOverrides,
+    experimentalCnUseCnRuleSet: state.experimentalCnUseCnRuleSet,
+    cnIpNoResolve: state.cnIpNoResolve,
+    ruleOrder: state.ruleOrder,
+  });
+}
+
+function retargetBuiltinRuleEdits(edits: BuiltinRuleEdits, from: string, to: string): BuiltinRuleEdits {
+  if (!from || from === to) return edits;
+  let changed = false;
+  const next: BuiltinRuleEdits = {};
+  for (const [key, edit] of Object.entries(edits || {})) {
+    if (edit?.target === from) {
+      next[key] = { ...edit, target: to };
+      changed = true;
+    } else {
+      next[key] = edit;
+    }
+  }
+  return changed ? next : edits;
+}
 
 export function createCustomActions(
   _set: SetState,
@@ -36,17 +82,7 @@ export function createCustomActions(
         ];
         return {
           customRules: nextCustomRules,
-          ruleOrder: normalizePersistedRuleOrder({
-            enabledModules: state.enabledProxyGroups,
-            customRules: nextCustomRules,
-            customProxyGroups: state.customProxyGroups,
-            moduleRuleOverrides: state.moduleRuleOverrides,
-            moduleRuleExclusions: state.moduleRuleExclusions,
-            proxyGroupNameOverrides: state.proxyGroupNameOverrides,
-            experimentalCnUseCnRuleSet: state.experimentalCnUseCnRuleSet,
-            cnIpNoResolve: state.cnIpNoResolve,
-            ruleOrder: state.ruleOrder,
-          }),
+          ruleOrder: normalizeRuleOrderForState({ ...state, customRules: nextCustomRules }),
         };
       });
     },
@@ -64,17 +100,7 @@ export function createCustomActions(
         const nextCustomRules = [...state.customRules, ...nextRules];
         return {
           customRules: nextCustomRules,
-          ruleOrder: normalizePersistedRuleOrder({
-            enabledModules: state.enabledProxyGroups,
-            customRules: nextCustomRules,
-            customProxyGroups: state.customProxyGroups,
-            moduleRuleOverrides: state.moduleRuleOverrides,
-            moduleRuleExclusions: state.moduleRuleExclusions,
-            proxyGroupNameOverrides: state.proxyGroupNameOverrides,
-            experimentalCnUseCnRuleSet: state.experimentalCnUseCnRuleSet,
-            cnIpNoResolve: state.cnIpNoResolve,
-            ruleOrder: state.ruleOrder,
-          }),
+          ruleOrder: normalizeRuleOrderForState({ ...state, customRules: nextCustomRules }),
         };
       });
     },
@@ -88,17 +114,7 @@ export function createCustomActions(
         );
         return {
           customRules: nextCustomRules,
-          ruleOrder: normalizePersistedRuleOrder({
-            enabledModules: state.enabledProxyGroups,
-            customRules: nextCustomRules,
-            customProxyGroups: state.customProxyGroups,
-            moduleRuleOverrides: state.moduleRuleOverrides,
-            moduleRuleExclusions: state.moduleRuleExclusions,
-            proxyGroupNameOverrides: state.proxyGroupNameOverrides,
-            experimentalCnUseCnRuleSet: state.experimentalCnUseCnRuleSet,
-            cnIpNoResolve: state.cnIpNoResolve,
-            ruleOrder: state.ruleOrder,
-          }),
+          ruleOrder: normalizeRuleOrderForState({ ...state, customRules: nextCustomRules }),
         };
       });
     },
@@ -108,78 +124,85 @@ export function createCustomActions(
         const nextCustomRules = state.customRules.filter((_, i) => i !== index);
         return {
           customRules: nextCustomRules,
-          ruleOrder: normalizePersistedRuleOrder({
-            enabledModules: state.enabledProxyGroups,
-            customRules: nextCustomRules,
-            customProxyGroups: state.customProxyGroups,
-            moduleRuleOverrides: state.moduleRuleOverrides,
-            moduleRuleExclusions: state.moduleRuleExclusions,
-            proxyGroupNameOverrides: state.proxyGroupNameOverrides,
-            experimentalCnUseCnRuleSet: state.experimentalCnUseCnRuleSet,
-            cnIpNoResolve: state.cnIpNoResolve,
-            ruleOrder: state.ruleOrder,
-          }),
+          ruleOrder: normalizeRuleOrderForState({ ...state, customRules: nextCustomRules }),
         };
       });
     },
 
     setRuleOrder: (order: string[]) => {
       setAndGenerateConfig((state) => ({
-        ruleOrder: normalizePersistedRuleOrder({
-          enabledModules: state.enabledProxyGroups,
-          customRules: state.customRules,
-          customProxyGroups: state.customProxyGroups,
-          moduleRuleOverrides: state.moduleRuleOverrides,
-          moduleRuleExclusions: state.moduleRuleExclusions,
-          proxyGroupNameOverrides: state.proxyGroupNameOverrides,
-          experimentalCnUseCnRuleSet: state.experimentalCnUseCnRuleSet,
-          cnIpNoResolve: state.cnIpNoResolve,
-          ruleOrder: order,
-        }),
+        ruleOrder: normalizeRuleOrderForState({ ...state, ruleOrder: order }),
       }));
     },
 
     addCustomProxyGroup: (group: Omit<CustomProxyGroup, "id">) => {
       const id = `custom-group-${Date.now()}`;
       setAndGenerateConfig((state) => {
+        const nextGroup: CustomProxyGroup = {
+          id,
+          name: group.name,
+          emoji: group.emoji,
+          ...(group.enabled === false ? { enabled: false } : {}),
+          ...(typeof group.description === "string" ? { description: group.description.trim() } : {}),
+          ...(group.memberSource === "filtered-nodes" ? { memberSource: "filtered-nodes" as const } : {}),
+          includeInGroupMembers:
+            typeof group.includeInGroupMembers === "boolean" ? group.includeInGroupMembers : false,
+          groupType: group.groupType,
+          ...(group.groupType === "load-balance" && group.strategy ? { strategy: group.strategy } : {}),
+          ...(group.advanced ? { advanced: normalizeProxyGroupAdvancedConfig(group.advanced) } : {}),
+        };
         const nextCustomProxyGroups = [
           ...state.customProxyGroups,
-          { ...group, id },
+          nextGroup,
         ];
         return {
           customProxyGroups: nextCustomProxyGroups,
-          ruleOrder: normalizePersistedRuleOrder({
-            enabledModules: state.enabledProxyGroups,
-            customRules: state.customRules,
-            customProxyGroups: nextCustomProxyGroups,
-            moduleRuleOverrides: state.moduleRuleOverrides,
-            moduleRuleExclusions: state.moduleRuleExclusions,
-            proxyGroupNameOverrides: state.proxyGroupNameOverrides,
-            experimentalCnUseCnRuleSet: state.experimentalCnUseCnRuleSet,
-            cnIpNoResolve: state.cnIpNoResolve,
-            ruleOrder: state.ruleOrder,
-          }),
         };
       });
     },
 
     removeCustomProxyGroup: (id: string) => {
       setAndGenerateConfig((state) => {
+        const removedGroup = state.customProxyGroups.find((g) => g.id === id);
+        if (!removedGroup) return state;
         const nextCustomProxyGroups = state.customProxyGroups.filter(
           (g) => g.id !== id,
         );
+        const removedGroupName = removedGroup?.name?.trim() || "";
+        const removedTarget = { kind: "custom" as const, id };
+        const nextCustomRules = state.customRules.filter(
+          (rule) => !ruleTargetMatchesContainer(rule.target, removedTarget, removedGroupName),
+        );
+        const nextCustomRuleSets = state.customRuleSets.filter(
+          (ruleSet) => !ruleTargetMatchesContainer(ruleSet.target, removedTarget, removedGroupName),
+        );
+        const nextBuiltinRuleEdits = compactBuiltinRuleEdits(
+          Object.fromEntries(
+            Object.entries(state.builtinRuleEdits || {}).map(([key, edit]) => {
+              if (!ruleTargetMatchesContainer(edit?.target, removedTarget, removedGroupName)) return [key, edit];
+              const { target: _removedTarget, ...rest } = edit;
+              return [key, rest];
+            }),
+          ),
+        );
+        // 分组删除后监听绑定失去目标且无 UI 入口可清理，必须连带移除
+        const nextGroupListeners = state.groupListeners.filter(
+          (binding) => !(binding && binding.target && binding.target.kind === "custom" && binding.target.id === id),
+        );
         return {
           customProxyGroups: nextCustomProxyGroups,
-          ruleOrder: normalizePersistedRuleOrder({
-            enabledModules: state.enabledProxyGroups,
-            customRules: state.customRules,
+          customRules: nextCustomRules,
+          customRuleSets: nextCustomRuleSets,
+          builtinRuleEdits: nextBuiltinRuleEdits,
+          ...(nextGroupListeners.length !== state.groupListeners.length
+            ? { groupListeners: nextGroupListeners }
+            : {}),
+          ruleOrder: normalizeRuleOrderForState({
+            ...state,
             customProxyGroups: nextCustomProxyGroups,
-            moduleRuleOverrides: state.moduleRuleOverrides,
-            moduleRuleExclusions: state.moduleRuleExclusions,
-            proxyGroupNameOverrides: state.proxyGroupNameOverrides,
-            experimentalCnUseCnRuleSet: state.experimentalCnUseCnRuleSet,
-            cnIpNoResolve: state.cnIpNoResolve,
-            ruleOrder: state.ruleOrder,
+            customRules: nextCustomRules,
+            customRuleSets: nextCustomRuleSets,
+            builtinRuleEdits: nextBuiltinRuleEdits,
           }),
         };
       });
@@ -196,22 +219,35 @@ export function createCustomActions(
                 rule.target === prevName ? { ...rule, target: nextName } : rule,
               )
             : state.customRules;
-        const nextCustomProxyGroups = state.customProxyGroups.map((g) =>
-          g.id === id ? { ...g, ...group } : g,
-        );
+        const nextCustomRuleSets =
+          prevName && nextName && prevName !== nextName
+            ? state.customRuleSets.map((ruleSet) =>
+                ruleSet.target === prevName ? { ...ruleSet, target: nextName } : ruleSet,
+              )
+            : state.customRuleSets;
+        const nextBuiltinRuleEdits =
+          prevName && nextName && prevName !== nextName
+            ? retargetBuiltinRuleEdits(state.builtinRuleEdits, prevName, nextName)
+            : state.builtinRuleEdits;
+        const nextCustomProxyGroups = state.customProxyGroups.map((g) => {
+          if (g.id !== id) return g;
+          const next = { ...g, ...group };
+          if (typeof group.enabled === "boolean") next.enabled = group.enabled;
+          if (group.advanced) next.advanced = normalizeProxyGroupAdvancedConfig(group.advanced);
+          if (typeof group.description === "string") next.description = group.description.trim();
+          return next;
+        });
         return {
           customRules: nextCustomRules,
+          customRuleSets: nextCustomRuleSets,
+          builtinRuleEdits: nextBuiltinRuleEdits,
           customProxyGroups: nextCustomProxyGroups,
-          ruleOrder: normalizePersistedRuleOrder({
-            enabledModules: state.enabledProxyGroups,
-            customRules: nextCustomRules,
+          ruleOrder: normalizeRuleOrderForState({
+            ...state,
             customProxyGroups: nextCustomProxyGroups,
-            moduleRuleOverrides: state.moduleRuleOverrides,
-            moduleRuleExclusions: state.moduleRuleExclusions,
-            proxyGroupNameOverrides: state.proxyGroupNameOverrides,
-            experimentalCnUseCnRuleSet: state.experimentalCnUseCnRuleSet,
-            cnIpNoResolve: state.cnIpNoResolve,
-            ruleOrder: state.ruleOrder,
+            customRules: nextCustomRules,
+            customRuleSets: nextCustomRuleSets,
+            builtinRuleEdits: nextBuiltinRuleEdits,
           }),
         };
       });

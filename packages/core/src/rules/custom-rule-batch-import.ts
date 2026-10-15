@@ -1,5 +1,8 @@
-import type { CustomRule } from "@subboost/core/types/config";
+import type { CustomRule, CustomRuleSet } from "@subboost/core/types/config";
 import { isCustomRuleType } from "./custom-rule-utils";
+import { allocateRuleSetId, parseManualRuleSetUrl } from "./rule-model";
+
+type ImportRule = Omit<CustomRule, "type"> & { type: CustomRule["type"] | "RULE-SET" };
 
 export type CustomRuleBatchImportPreviewStatus =
   | "ready"
@@ -12,20 +15,24 @@ export type CustomRuleBatchImportPreviewItem = {
   raw: string;
   status: CustomRuleBatchImportPreviewStatus;
   message: string;
-  rule?: CustomRule;
+  rule?: ImportRule;
 };
 
 export type ParseCustomRuleBatchImportOptions = {
   text: string;
-  defaultType: CustomRule["type"];
+  defaultType: ImportRule["type"];
   defaultTarget: string;
   defaultNoResolve: boolean;
   targetOptions: string[];
+  ruleSetTargetOptions?: string[];
   existingRules: CustomRule[];
+  existingRuleSets?: CustomRuleSet[];
+  reservedRuleSetIds?: string[];
 };
 
 export type CustomRuleBatchImportResult = {
   rules: CustomRule[];
+  ruleSets: CustomRuleSet[];
   items: CustomRuleBatchImportPreviewItem[];
   readyCount: number;
   skippedCount: number;
@@ -93,11 +100,16 @@ function normalizeNoResolve(value: string): boolean | null {
   return value.trim().toLowerCase() === "no-resolve" ? true : null;
 }
 
-function getRuleKey(rule: Pick<CustomRule, "type" | "value" | "target" | "noResolve">): string {
+function getTargetKey(target: CustomRule["target"]): string {
+  if (typeof target === "string") return target.trim();
+  return `${target.kind}:${target.id.trim()}`;
+}
+
+function getRuleKey(rule: Pick<ImportRule, "type" | "value" | "target" | "noResolve">): string {
   return [
     rule.type,
     rule.value.trim(),
-    rule.target.trim(),
+    getTargetKey(rule.target),
     Boolean(rule.noResolve) ? "1" : "0",
   ].join("\u0000");
 }
@@ -105,7 +117,7 @@ function getRuleKey(rule: Pick<CustomRule, "type" | "value" | "target" | "noReso
 function buildRuleFromParts(
   parts: string[],
   options: ParseCustomRuleBatchImportOptions,
-): Pick<CustomRule, "type" | "value" | "target" | "noResolve"> | string {
+): Pick<ImportRule, "type" | "value" | "target" | "noResolve"> | string {
   if (parts.length === 0) return "规则为空";
 
   const first = parts[0]?.trim() ?? "";
@@ -120,7 +132,7 @@ function buildRuleFromParts(
     };
   }
 
-  if (!isCustomRuleType(first)) {
+  if (!isCustomRuleType(first) && first !== "RULE-SET") {
     return `未知规则类型：${first}`;
   }
 
@@ -129,11 +141,11 @@ function buildRuleFromParts(
   }
 
   const value = parts[1]?.trim() ?? "";
-  const target = parts.length >= 3 ? parts[2]?.trim() ?? "" : options.defaultTarget.trim();
+  const target = parts[2]?.trim() || options.defaultTarget.trim();
   const noResolve =
     parts.length >= 4
       ? normalizeNoResolve(parts[3] ?? "")
-      : parts.length >= 3
+      : parts[2]?.trim()
         ? false
         : Boolean(options.defaultNoResolve);
 
@@ -158,9 +170,14 @@ export function parseCustomRuleBatchImport(
       .filter(Boolean),
   );
   const existingKeys = new Set(options.existingRules.map((rule) => getRuleKey(rule)));
+  for (const rule of options.existingRuleSets ?? []) {
+    existingKeys.add(getRuleKey({ type: "RULE-SET", value: rule.path, target: rule.target, noResolve: rule.noResolve }));
+  }
+  const usedIds = new Set([...(options.reservedRuleSetIds ?? []), ...(options.existingRuleSets ?? []).map((rule) => rule.id)]);
   const batchKeys = new Set<string>();
   const items: CustomRuleBatchImportPreviewItem[] = [];
   const rules: CustomRule[] = [];
+  const ruleSets: CustomRuleSet[] = [];
   let skippedCount = 0;
   let errorCount = 0;
   let duplicateCount = 0;
@@ -250,7 +267,8 @@ export function parseCustomRuleBatchImport(
       return;
     }
 
-    if (!draft.target.trim()) {
+    const target = getTargetKey(draft.target);
+    if (!target) {
       errorCount += 1;
       items.push({
         lineNumber,
@@ -261,22 +279,36 @@ export function parseCustomRuleBatchImport(
       return;
     }
 
-    if (!targetSet.has(draft.target.trim())) {
+    if (!targetSet.has(target)) {
       errorCount += 1;
       items.push({
         lineNumber,
         raw: rawLine,
         status: "error",
-        message: `未知目标：${draft.target}`,
+        message: `未知目标：${target}`,
       });
       return;
     }
 
-    const rule: CustomRule = {
+    let ruleSet: CustomRuleSet | undefined;
+    if (draft.type === "RULE-SET") {
+      try {
+        if (["DIRECT", "REJECT"].includes(target)) throw new Error("请选择规则集使用的代理组");
+        if (options.ruleSetTargetOptions && !options.ruleSetTargetOptions.includes(target)) throw new Error(`未知规则集目标：${target}`);
+        const metadata = parseManualRuleSetUrl(draft.value);
+        const id = allocateRuleSetId(metadata.name, usedIds);
+        ruleSet = { ...metadata, id, name: id, target, noResolve: Boolean(draft.noResolve) };
+      } catch (error) {
+        errorCount += 1;
+        items.push({ lineNumber, raw: rawLine, status: "error", message: error instanceof Error ? error.message : "规则集链接无效" });
+        return;
+      }
+    }
+    const rule: ImportRule = {
       id: "",
       type: draft.type,
       value: draft.value.trim(),
-      target: draft.target.trim(),
+      target,
       noResolve: Boolean(draft.noResolve),
     };
     const key = getRuleKey(rule);
@@ -293,7 +325,12 @@ export function parseCustomRuleBatchImport(
     }
 
     batchKeys.add(key);
-    rules.push(rule);
+    if (ruleSet) {
+      usedIds.add(ruleSet.id);
+      ruleSets.push(ruleSet);
+    } else if (rule.type !== "RULE-SET") {
+      rules.push({ ...rule, type: rule.type });
+    }
     items.push({
       lineNumber,
       raw: rawLine,
@@ -305,11 +342,12 @@ export function parseCustomRuleBatchImport(
 
   return {
     rules,
+    ruleSets,
     items,
-    readyCount: rules.length,
+    readyCount: rules.length + ruleSets.length,
     skippedCount,
     errorCount,
     duplicateCount,
-    canImport: rules.length > 0 && errorCount === 0 && duplicateCount === 0,
+    canImport: rules.length + ruleSets.length > 0 && errorCount === 0 && duplicateCount === 0,
   };
 }

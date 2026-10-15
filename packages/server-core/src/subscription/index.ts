@@ -4,6 +4,7 @@ export * from "./auto-update-schedule";
 export * from "./auto-update-state";
 export * from "./cron-update-summary";
 export * from "./crud";
+export * from "./doh-resolver";
 export * from "./fetch-profile-heuristics";
 export * from "./fetch-rate-limit";
 export * from "./manual-refresh-response";

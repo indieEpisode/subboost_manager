@@ -1,21 +1,28 @@
 import type { ParsedNode, ParseResult } from "@subboost/core/types/node";
-import type { TemplateType, CustomRule, CustomProxyGroup } from "@subboost/core/types/config";
+import type {
+  BuiltinRuleEdits,
+  CustomProxyGroup,
+  CustomRule,
+  CustomRuleSet,
+  GroupListenerBinding,
+  GroupListenerTarget,
+  ProxyGroupAdvancedConfig,
+  TemplateType,
+} from "@subboost/core/types/config";
 import { DEFAULT_BASE_CONFIG_YAML, DEFAULT_SUBBOOST_CONFIG } from "@subboost/core/config/defaults";
 import { getBuiltinTemplateId } from "@subboost/core/templates/builtin";
 import { TEMPLATES } from "@subboost/core/templates";
-import type { FilteredProxyGroup } from "@subboost/core/types/filtered-proxy-group";
-import type { ModuleRuleExclusions } from "@subboost/core/generator/module-rules";
-import type {
-  DialerProxyGroup,
-  ModuleRuleOverride,
-  SubBoostTemplateConfig,
-} from "@subboost/core/types/template-config";
+import type { DialerProxyGroup, SubBoostTemplateConfig } from "@subboost/core/types/template-config";
 import {
   isSubscriptionImportError,
   type SubscriptionImportErrorInfo,
 } from "@subboost/core/subscription/import-error";
 import type { SubscriptionUserInfo } from "@subboost/core/subscription/subscription-userinfo";
 import { tryNormalizeSubscriptionUrlInput } from "@subboost/core/subscription/url-input";
+import {
+  DEFAULT_NODE_NAME_FILTER_CONFIG,
+  type NodeNameFilterConfig,
+} from "@subboost/core/subscription/node-name-filter";
 import { getActiveProductApiAdapter } from "@subboost/ui/product/api-adapter";
 import {
   getNodeSourceIds,
@@ -28,8 +35,17 @@ import {
 } from "@subboost/core/subscription/node-source-state";
 
 export { DEFAULT_BASE_CONFIG_YAML };
-export type { ModuleRuleExclusions } from "@subboost/core/generator/module-rules";
-export type { DialerProxyGroup, ModuleRuleOverride, SubBoostTemplateConfig } from "@subboost/core/types/template-config";
+export type RuleSetDraft = Omit<CustomRuleSet, "target">;
+export type { BuiltinRuleEdits, CustomRuleSet, GroupListenerBinding, GroupListenerTarget, ProxyGroupAdvancedConfig };
+export type { DialerProxyGroup, SubBoostTemplateConfig } from "@subboost/core/types/template-config";
+export type { NodeNameFilterConfig } from "@subboost/core/subscription/node-name-filter";
+
+export type ConfigHistoryEntry =
+  | string
+  | {
+      yaml: string;
+      nodeNameFilter: NodeNameFilterConfig;
+    };
 
 // 预设的中转组名称
 export const PRESET_RELAY_NAMES = [
@@ -149,6 +165,8 @@ export async function fetchUrlContentInBrowser(
 }
 
 export interface ConfigState {
+  /** Changes when a new editor session replaces the current draft; never persisted. */
+  draftRevision: number;
   // 节点相关
   nodes: ParsedNode[];
   deletedNodeNames: string[];
@@ -162,6 +180,7 @@ export interface ConfigState {
   }>;
   parseErrors: string[];
   isLoading: boolean;
+  nodeNameFilter: NodeNameFilterConfig;
 
   // 订阅源
   sources: SubscriptionSource[];
@@ -171,9 +190,10 @@ export interface ConfigState {
   enabledProxyGroups: string[];
   hiddenProxyGroups: string[]; // 隐藏的内置代理组（仅影响 UI，不参与生成）
   customProxyGroups: CustomProxyGroup[]; // 自定义分流组
-  filteredProxyGroups: FilteredProxyGroup[]; // 筛选代理组（从节点池派生）
-  moduleRuleOverrides: Record<string, ModuleRuleOverride[]>; // 内置代理组附加规则集
-  moduleRuleExclusions: ModuleRuleExclusions; // 内置代理组排除的预设规则
+  proxyGroupAdvanced: Record<string, ProxyGroupAdvancedConfig>; // 内置分流组高级筛选/排序配置
+  proxyGroupAdvancedModeEnabled: boolean; // 分流组高级模式 UI 开关
+  customRuleSets: CustomRuleSet[]; // 用户新增规则集，统一进入自定义规则块
+  builtinRuleEdits: BuiltinRuleEdits; // 内置规则的目标覆盖或禁用状态
   customRules: CustomRule[];
   dialerProxyGroups: DialerProxyGroup[];
 
@@ -181,15 +201,12 @@ export interface ConfigState {
   proxyGroupNameOverrides: Record<string, string>;
 
   // 代理组顺序（影响 Clash 客户端中的展示顺序；由可视化预览拖拽维护）
-  // Key 格式：module:<id> / custom:<id> / filtered:<id> / dialer:<id>
+  // Key 格式：module:<id> / custom:<id> / dialer:<id>
   proxyGroupOrder: string[];
 
   // 用户可编辑规则窗口顺序
-  // Key 格式：custom-rule:<id> / custom-group:<groupId>:<ruleId> / module:<moduleId>:<ruleId> / special:<id>
+  // Key 格式：custom-rule:<id> / custom-rule-set:<id> / module:<moduleId>:<ruleId> / special:<id>
   ruleOrder: string[];
-
-  // 是否允许在规则管理中调整所有规则顺序；只影响 UI，不参与生成。
-  allRulesOrderEditingEnabled: boolean;
 
   // 当前配置是否已确认过“编辑预设规则”风险提示；只影响 UI，不参与生成。
   moduleRuleEditWarningAccepted: boolean;
@@ -212,12 +229,15 @@ export interface ConfigState {
   // 节点监听端口（用于生成 listeners）
   listenerPorts: Record<string, number>;
 
+  // 分组监听：按稳定 ID 给策略组绑定 mixed inbound 端口（用于生成 listeners）
+  groupListeners: GroupListenerBinding[];
+
   // 生成结果
   generatedYaml: string;
   generatedYamlError: string | null;
 
   // 历史记录（用于撤销）
-  history: string[];
+  history: ConfigHistoryEntry[];
   historyIndex: number;
 }
 
@@ -236,7 +256,8 @@ export interface ConfigActions {
   restoreNodeName: (nodeName: string) => void;
   restoreDeletedNode: (originName: string) => void;
   moveNode: (nodeName: string, direction: "up" | "down") => void;
-  setNodeOrder: (nodeName: string, order: number) => void;
+  setNodeOrder: (nodeName: string, order: number, scopeNodeNames?: string[]) => void;
+  setNodeNameFilter: (config: NodeNameFilterConfig) => void;
 
   // 模板和配置
   setTemplate: (template: TemplateType) => void;
@@ -249,7 +270,6 @@ export interface ConfigActions {
   updateCustomRule: (id: string, rule: Partial<Omit<CustomRule, "id">>) => void;
   removeCustomRule: (index: number) => void;
   setRuleOrder: (order: string[]) => void;
-  setAllRulesOrderEditingEnabled: (enabled: boolean) => void;
 
   // 自定义分流组
   addCustomProxyGroup: (group: Omit<CustomProxyGroup, "id">) => void;
@@ -259,17 +279,15 @@ export interface ConfigActions {
   // 代理组顺序
   setProxyGroupOrder: (order: string[]) => void;
 
-  // 筛选代理组
-  addFilteredProxyGroup: (group: Omit<FilteredProxyGroup, "id">) => void;
-  removeFilteredProxyGroup: (id: string) => void;
-  updateFilteredProxyGroup: (id: string, group: Partial<FilteredProxyGroup>) => void;
+  // 分流组高级配置
+  updateProxyGroupAdvanced: (moduleId: string, patch: Partial<ProxyGroupAdvancedConfig>) => void;
 
-  // 内置分流组附加规则集
-  addModuleRules: (moduleId: string, rules: ModuleRuleOverride[]) => void;
+  // 规则集与内置规则编辑
+  addModuleRules: (moduleId: string, rules: RuleSetDraft[]) => void;
   updateModuleRule: (
     moduleId: string,
     ruleId: string,
-    rule: Partial<Omit<ModuleRuleOverride, "id">>
+    rule: Partial<Omit<RuleSetDraft, "id">>
   ) => void;
   removeModuleRule: (moduleId: string, ruleId: string) => void;
   moveModuleRule: (
@@ -278,6 +296,7 @@ export interface ConfigActions {
     target: { kind: "module" | "custom"; id: string }
   ) => void;
   restoreModuleRule: (moduleId: string, ruleId: string) => void;
+  resetModuleRuleTarget: (moduleId: string, ruleId: string) => void;
   restoreModuleDefaultRules: (moduleId: string) => void;
   acceptModuleRuleEditWarning: () => void;
 
@@ -297,10 +316,15 @@ export interface ConfigActions {
   setTestUrl: (url: string) => void;
   setTestInterval: (interval: number) => void;
   setRuleProviderBaseUrl: (url: string) => void;
+  setProxyGroupAdvancedModeEnabled: (value: boolean) => void;
   setCnIpNoResolve: (value: boolean) => void;
   setExperimentalCnUseCnRuleSet: (value: boolean) => void;
   setListenerPort: (nodeName: string, port: number | null) => void;
   bulkSetListenerPorts: (patch: Record<string, number | null>) => void;
+  setGroupListener: (
+    target: GroupListenerTarget,
+    config: { port: number; enabled?: boolean; allowLan?: boolean } | null
+  ) => void;
 
   // 生成配置
   generateConfig: () => string;
@@ -326,11 +350,16 @@ export interface ConfigActions {
 }
 
 export const initialState: ConfigState = {
+  draftRevision: 0,
   nodes: [],
   deletedNodeNames: [],
   deletedNodes: [],
   parseErrors: [],
   isLoading: false,
+  nodeNameFilter: {
+    enabled: DEFAULT_NODE_NAME_FILTER_CONFIG.enabled,
+    excludeRegexes: [...DEFAULT_NODE_NAME_FILTER_CONFIG.excludeRegexes],
+  },
   sources: [
     { id: "1", type: "url", content: "" },
     { id: "2", type: "yaml", content: "" },
@@ -341,15 +370,15 @@ export const initialState: ConfigState = {
   enabledProxyGroups: TEMPLATES.minimal.groups,
   hiddenProxyGroups: [],
   customProxyGroups: [], // 自定义分流组
-  filteredProxyGroups: [],
-  moduleRuleOverrides: {},
-  moduleRuleExclusions: {},
+  proxyGroupAdvanced: {},
+  proxyGroupAdvancedModeEnabled: false,
+  customRuleSets: [],
+  builtinRuleEdits: {},
   customRules: [],
   dialerProxyGroups: [],
   proxyGroupNameOverrides: {},
   proxyGroupOrder: [],
   ruleOrder: [],
-  allRulesOrderEditingEnabled: false,
   moduleRuleEditWarningAccepted: false,
   appliedTemplateId: getBuiltinTemplateId("minimal"),
   dnsYaml: DEFAULT_BASE_CONFIG_YAML,
@@ -361,6 +390,7 @@ export const initialState: ConfigState = {
   cnIpNoResolve: DEFAULT_SUBBOOST_CONFIG.cnIpNoResolve,
   experimentalCnUseCnRuleSet: DEFAULT_SUBBOOST_CONFIG.experimentalCnUseCnRuleSet,
   listenerPorts: {},
+  groupListeners: [],
   generatedYaml: "",
   generatedYamlError: null,
   history: [],

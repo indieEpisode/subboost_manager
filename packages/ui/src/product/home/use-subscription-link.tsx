@@ -7,14 +7,11 @@ import {
   getNodeSourceIds,
   type SubscriptionSource,
   type DialerProxyGroup,
-  type ModuleRuleExclusions,
-  type ModuleRuleOverride,
 } from "@subboost/ui/store/config-store";
-import type { CustomRule, CustomProxyGroup } from "@subboost/core/types/config";
+import type { BuiltinRuleEdits, CustomRule, CustomProxyGroup, CustomRuleSet } from "@subboost/core/types/config";
 import type { User } from "@subboost/ui/store/user-store";
 import { useConfigStore } from "@subboost/ui/store/config-store";
 import { captureAuthConfigHandoff } from "@subboost/ui/store/config-store/auth-handoff";
-import type { FilteredProxyGroup } from "@subboost/core/types/filtered-proxy-group";
 import {
   hasSubscriptionUserInfo,
   mergeSubscriptionUserInfo,
@@ -30,6 +27,7 @@ import {
   type AutoUpdateIntervalPolicy,
   type AutoUpdateIntervalPolicyOverride,
 } from "@subboost/core/subscription/auto-update-interval";
+import type { NodeNameFilterConfig } from "@subboost/core/subscription/node-name-filter";
 import { tryNormalizeSubscriptionUrlInput } from "@subboost/core/subscription/url-input";
 import { DEFAULT_NODE_NAME_TEMPLATE } from "@subboost/core/node-name-template";
 import { formatDateInBeijing } from "@subboost/core/time/beijing";
@@ -38,6 +36,7 @@ import {
   type ProductInteractionResult,
   type ProductMode,
 } from "@subboost/ui/product/interactions";
+import { copyTextToClipboard } from "@subboost/ui/lib/clipboard";
 
 type EditingSubscription = {
   id: string;
@@ -79,10 +78,9 @@ type Options = {
   hiddenProxyGroups: string[];
   customRules: CustomRule[];
   customProxyGroups: CustomProxyGroup[];
+  customRuleSets: CustomRuleSet[];
+  builtinRuleEdits: BuiltinRuleEdits;
   ruleOrder: string[];
-  allRulesOrderEditingEnabled: boolean;
-  moduleRuleOverrides: Record<string, ModuleRuleOverride[]>;
-  moduleRuleExclusions: ModuleRuleExclusions;
   moduleRuleEditWarningAccepted: boolean;
   dialerProxyGroups: DialerProxyGroup[];
   proxyGroupNameOverrides: Record<string, string>;
@@ -114,10 +112,9 @@ export function useSubscriptionLink({
   hiddenProxyGroups,
   customRules,
   customProxyGroups,
+  customRuleSets,
+  builtinRuleEdits,
   ruleOrder,
-  allRulesOrderEditingEnabled,
-  moduleRuleOverrides,
-  moduleRuleExclusions,
   moduleRuleEditWarningAccepted,
   dialerProxyGroups,
   proxyGroupNameOverrides,
@@ -299,8 +296,11 @@ export function useSubscriptionLink({
     }
 
     setIsCreatingSubscription(true);
+    const draftRevision = useConfigStore.getState().draftRevision;
+    const isCurrentDraft = () => useConfigStore.getState().draftRevision === draftRevision;
 
     try {
+      const nodeNameFilter: NodeNameFilterConfig = useConfigStore.getState().nodeNameFilter;
       const subscriptionInfo: SubscriptionUserInfo = {};
       const sourceSubscriptionInfoById = new Map<string, SubscriptionUserInfo>();
       for (const source of storeSources) {
@@ -329,6 +329,7 @@ export function useSubscriptionLink({
             template,
             appliedTemplateId,
             smartNodeMatchingEnabled,
+            nodeNameFilter,
             // 用于“我的订阅 → 编辑”恢复输入源（保留 YAML/节点链接/多个 URL 的顺序）
             sources: storeSources
             .filter((s) => typeof s?.content === "string" && s.content.trim())
@@ -383,16 +384,17 @@ export function useSubscriptionLink({
             hiddenProxyGroups,
             customRules,
             ruleOrder,
-            allRulesOrderEditingEnabled,
             customProxyGroups,
-            filteredProxyGroups: useConfigStore.getState().filteredProxyGroups as FilteredProxyGroup[],
-            moduleRuleOverrides,
-            moduleRuleExclusions,
+            customRuleSets,
+            builtinRuleEdits,
+            proxyGroupAdvanced: useConfigStore.getState().proxyGroupAdvanced,
+            proxyGroupAdvancedModeEnabled: Boolean(useConfigStore.getState().proxyGroupAdvancedModeEnabled),
             moduleRuleEditWarningAccepted,
             dialerProxyGroups,
             proxyGroupNameOverrides,
             proxyGroupOrder: useConfigStore.getState().proxyGroupOrder,
             listenerPorts,
+            groupListeners: useConfigStore.getState().groupListeners,
             dnsYaml,
             ruleProviderBaseUrl,
             testUrl,
@@ -411,6 +413,7 @@ export function useSubscriptionLink({
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const data = await response.json().catch(() => ({} as any));
+      if (!isCurrentDraft()) return;
 
       if (response.status === 401) {
         clearUser();
@@ -451,6 +454,7 @@ export function useSubscriptionLink({
         toast({ title: data.error || "创建失败", variant: "destructive" });
       }
     } catch (error) {
+      if (!isCurrentDraft()) return;
       console.error("Create subscription error:", error);
       trackSubscriptionMutation("runtimeError");
       toast({ title: "创建订阅失败，请稍后重试", variant: "destructive" });
@@ -466,9 +470,10 @@ export function useSubscriptionLink({
     cnIpNoResolve,
     experimentalCnUseCnRuleSet,
     customProxyGroups,
+    customRuleSets,
+    builtinRuleEdits,
     customRules,
     ruleOrder,
-    allRulesOrderEditingEnabled,
     deletedNodeNames,
     deletedNodes,
     dialerProxyGroups,
@@ -481,8 +486,6 @@ export function useSubscriptionLink({
     listenerPorts,
     goToLogin,
     moduleRuleEditWarningAccepted,
-    moduleRuleExclusions,
-    moduleRuleOverrides,
     nodes,
     proxyGroupNameOverrides,
     ruleProviderBaseUrl,
@@ -501,17 +504,18 @@ export function useSubscriptionLink({
   const handleCopyUrl = React.useCallback(async () => {
     if (!subscriptionUrl) return;
 
-    try {
-      await navigator.clipboard.writeText(subscriptionUrl);
-      setCopied(true);
-      interactions.subscriptionLinkCopied?.({
-        mode: subscriptionFlowMode,
-        flow: isEditingExistingSubscription ? "update" : "create",
-      });
-      setTimeout(() => setCopied(false), 2000);
-    } catch (error) {
-      console.error("Copy error:", error);
+    const copied = await copyTextToClipboard(subscriptionUrl);
+    if (!copied) {
+      toast({ title: "复制失败，请手动复制订阅链接", variant: "destructive" });
+      return;
     }
+
+    setCopied(true);
+    interactions.subscriptionLinkCopied?.({
+      mode: subscriptionFlowMode,
+      flow: isEditingExistingSubscription ? "update" : "create",
+    });
+    setTimeout(() => setCopied(false), 2000);
   }, [interactions, isEditingExistingSubscription, subscriptionFlowMode, subscriptionUrl]);
 
   return {

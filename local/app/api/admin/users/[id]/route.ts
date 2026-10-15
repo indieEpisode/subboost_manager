@@ -1,5 +1,5 @@
 import { withAdminAccount } from "@local/lib/api-auth";
-import { apiError, json, readJsonBody } from "@local/lib/http";
+import { apiError, json, jsonBodyError, LOCAL_JSON_BODY_LIMITS, readJsonBody } from "@local/lib/http";
 import { deleteManagedUser, updateManagedUser } from "@local/lib/user-admin-service";
 
 type RouteContext = {
@@ -9,7 +9,9 @@ type RouteContext = {
 export async function PATCH(request: Request, { params }: RouteContext) {
   return withAdminAccount(async () => {
     const { id } = await params;
-    const body = await readJsonBody(request);
+    const parsed = await readJsonBody(request, LOCAL_JSON_BODY_LIMITS.small);
+    if (!parsed.ok) return jsonBodyError(parsed);
+    const body = parsed.value;
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       return apiError("Invalid JSON body.", "BAD_REQUEST", 400);
     }

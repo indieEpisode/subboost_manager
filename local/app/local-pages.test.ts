@@ -3,10 +3,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  buttons: [] as any[],
   dashboardAdapter: null as any,
   homeAdapter: null as any,
   readJsonResponse: vi.fn(),
   readSourceImportResponse: vi.fn(),
+  switches: [] as any[],
   templateAdapter: null as any,
   userState: {
     fetchUser: vi.fn(),
@@ -17,12 +19,16 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("lucide-react", () => ({
   LogOut: () => React.createElement("span", null, "LogOut"),
+  Network: () => React.createElement("span", null, "Network"),
   ServerCog: () => React.createElement("span", null, "ServerCog"),
   ShieldCheck: () => React.createElement("span", null, "ShieldCheck"),
 }));
 
 vi.mock("@subboost/ui/components/ui/button", () => ({
-  Button: (props: any) => React.createElement("button", props, props.children),
+  Button: (props: any) => {
+    mocks.buttons.push(props);
+    return React.createElement("button", props, props.children);
+  },
 }));
 
 vi.mock("@subboost/ui/components/ui/card", () => ({
@@ -30,6 +36,13 @@ vi.mock("@subboost/ui/components/ui/card", () => ({
   CardContent: (props: any) => React.createElement("div", props, props.children),
   CardHeader: (props: any) => React.createElement("header", props, props.children),
   CardTitle: (props: any) => React.createElement("h2", props, props.children),
+}));
+
+vi.mock("@subboost/ui/components/ui/switch", () => ({
+  Switch: (props: any) => {
+    mocks.switches.push(props);
+    return React.createElement("button", { disabled: props.disabled, role: "switch" });
+  },
 }));
 
 vi.mock("@subboost/ui/dashboard/subscription-dashboard-surface", () => ({
@@ -62,7 +75,12 @@ vi.mock("@subboost/ui/templates/template-library-surface", () => ({
   },
 }));
 
+vi.mock("@local/components/local-login", () => ({
+  LocalLogin: () => React.createElement("main", null, "LocalLogin"),
+}));
+
 import DashboardPage from "./dashboard/page";
+import LoginPage from "./login/page";
 import SettingsPage from "./dashboard/settings/page";
 import manifest from "./manifest";
 import HomePage from "./page";
@@ -75,6 +93,8 @@ describe("local app pages and adapters", () => {
     mocks.dashboardAdapter = null;
     mocks.homeAdapter = null;
     mocks.templateAdapter = null;
+    mocks.buttons = [];
+    mocks.switches = [];
     mocks.userState = {
       fetchUser: vi.fn(),
       logout: vi.fn(),
@@ -93,6 +113,10 @@ describe("local app pages and adapters", () => {
         { src: "/icon.png", purpose: "maskable" },
       ],
     });
+  });
+
+  it("renders the local login page wrapper", () => {
+    expect(renderToStaticMarkup(React.createElement(LoginPage))).toBe("<main>LocalLogin</main>");
   });
 
   it("connects the local home adapter to local API routes", async () => {
@@ -149,8 +173,8 @@ describe("local app pages and adapters", () => {
     const adapter = mocks.dashboardAdapter;
     vi.stubGlobal("window", {
       location: {
-        href: "http://23.80.90.37:31401/dashboard",
-        origin: "http://23.80.90.37:31401",
+        href: "http://local.subboost.test:31401/dashboard",
+        origin: "http://local.subboost.test:31401",
       },
     });
 
@@ -162,7 +186,7 @@ describe("local app pages and adapters", () => {
       adapter.resolveDownloadUrl({
         subscriptionUrl: "http://localhost:3001/api/subscriptions/token-1/config.yaml",
       })
-    ).toBe("http://23.80.90.37:31401/api/subscriptions/token-1/config.yaml");
+    ).toBe("http://local.subboost.test:31401/api/subscriptions/token-1/config.yaml");
     expect(adapter.autoUpdateIntervalPolicy).toEqual({
       defaultHours: 12,
       minHours: 0.1,
@@ -200,11 +224,20 @@ describe("local app pages and adapters", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/templates?id=tpl%201", { method: "DELETE" });
   });
 
-  it("renders local settings for anonymous and authenticated states", () => {
+  it("renders local settings for anonymous and authenticated states", async () => {
     let html = renderToStaticMarkup(React.createElement(SettingsPage));
     expect(html).toContain("未登录");
+    expect(html).toContain("允许本机和局域网订阅");
+    expect(html).toContain("本机、局域网及其他保留地址都可作为订阅源");
     expect(html).toContain("/api/health/live");
+    expect(mocks.buttons.find((button: any) => button.variant === "destructive")).toMatchObject({
+      disabled: true,
+    });
+    expect(mocks.switches[0]).toMatchObject({ checked: false, disabled: true });
 
+    vi.stubGlobal("window", { location: { href: "" } });
+    mocks.buttons = [];
+    mocks.switches = [];
     mocks.userState = {
       fetchUser: vi.fn(),
       logout: vi.fn(),
@@ -213,5 +246,13 @@ describe("local app pages and adapters", () => {
     html = renderToStaticMarkup(React.createElement(SettingsPage));
     expect(html).toContain("admin");
     expect(html).toContain("2 / 9999");
+    const logoutButton = mocks.buttons.find((button: any) => button.variant === "destructive");
+    expect(logoutButton).toMatchObject({ disabled: false });
+    expect(mocks.switches[0]).toMatchObject({ checked: false, disabled: true });
+    logoutButton.onClick();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mocks.userState.logout).toHaveBeenCalledTimes(1);
+    expect(window.location.href).toBe("/login");
   });
 });

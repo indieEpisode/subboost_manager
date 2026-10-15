@@ -117,8 +117,8 @@ function StatCard({ label, value, highlight }: { label: string; value: number; h
   return (
     <Card>
       <CardContent className="p-4">
-        <p className="text-xs text-white/40">{label}</p>
-        <p className={cn("mt-1 text-2xl font-bold", highlight && value > 0 ? "text-red-300" : "text-white")}>{value}</p>
+        <p className="text-xs text-fg-40">{label}</p>
+        <p className={cn("mt-1 text-2xl font-bold", highlight && value > 0 ? "text-red-300" : "text-fg")}>{value}</p>
       </CardContent>
     </Card>
   );
@@ -331,7 +331,7 @@ export function LocalUserManagement() {
       <div className="container mx-auto px-4 py-16 text-center">
         <ShieldAlert className="mx-auto h-10 w-10 text-amber-400" />
         <h1 className="mt-4 text-xl font-bold">需要管理员权限</h1>
-        <p className="mt-2 text-white/50">此页面仅对管理员开放。</p>
+        <p className="mt-2 text-fg-50">此页面仅对管理员开放。</p>
       </div>
     );
   }
@@ -340,11 +340,11 @@ export function LocalUserManagement() {
     <div className="container mx-auto px-4 py-8">
       <div className="mb-6">
         <h1 className="text-2xl font-bold">用户管理</h1>
-        <p className="mt-1 text-white/50">管理普通用户、资源配额，以及订阅拉取限流监控</p>
+        <p className="mt-1 text-fg-50">管理普通用户、资源配额，以及订阅拉取限流监控</p>
       </div>
 
       {loading && !data ? (
-        <p className="text-white/40">加载中…</p>
+        <p className="text-fg-40">加载中…</p>
       ) : data ? (
         <div className="space-y-6">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -363,10 +363,10 @@ export function LocalUserManagement() {
               </CardHeader>
               <CardContent className="space-y-2">
                 {data.throttledSubscriptions.map((t) => (
-                  <div key={t.id} className="flex items-center justify-between gap-3 rounded-lg bg-white/5 px-3 py-2">
+                  <div key={t.id} className="flex items-center justify-between gap-3 rounded-lg bg-ink/5 px-3 py-2">
                     <div className="min-w-0">
                       <p className="truncate text-sm font-medium">{t.name}</p>
-                      <p className="text-xs text-white/40">
+                      <p className="text-xs text-fg-40">
                         @{t.ownerUsername} · 恢复于 {fmt(t.pullThrottledUntil ?? t.refreshThrottledUntil)}
                       </p>
                     </div>
@@ -401,7 +401,7 @@ export function LocalUserManagement() {
               {data.users.map((u) => {
                 const isSelf = u.id === currentUser?.id;
                 return (
-                  <div key={u.id} className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                  <div key={u.id} className="rounded-xl border border-ink/10 bg-ink/3 p-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-medium">@{u.username}</span>
                       <Badge variant={u.role === "admin" ? "default" : "secondary"}>
@@ -410,7 +410,7 @@ export function LocalUserManagement() {
                       {u.disabled && <Badge variant="destructive">已禁用</Badge>}
                       {u.throttledCount > 0 && <Badge variant="warning">{u.throttledCount} 个订阅被限流</Badge>}
                     </div>
-                    <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-white/50 sm:grid-cols-3">
+                    <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-fg-50 sm:grid-cols-3">
                       <span>订阅 {u.subscriptionCount}/{u.quota.maxSubscriptions ?? "默认"}</span>
                       <span>模板 {u.templateCount}</span>
                       <span>近期拉取 {u.recentPullCount}</span>
@@ -459,11 +459,11 @@ export function LocalUserManagement() {
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
                   <p className="text-sm font-medium">客户端拉取时强制刷新订阅</p>
-                  <p className="mt-1 text-xs text-white/40">
+                  <p className="mt-1 text-xs text-fg-40">
                     开启后，客户端每次拉取会先去上游刷新（受下方最小间隔限制）再返回最新节点；上游刷新失败会直接返回错误。这会明显增加服务器与上游开销，请配合限流一起使用。
                   </p>
                 </div>
-                <Switch checked={forceRefresh} onCheckedChange={setForceRefresh} />
+                <Switch aria-label="客户端拉取时强制刷新订阅" checked={forceRefresh} onCheckedChange={setForceRefresh} />
               </div>
               {forceRefresh ? (
                 <div className="space-y-1.5">

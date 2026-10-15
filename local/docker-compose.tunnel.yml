@@ -1,0 +1,56 @@
+# Optional self-hosted deployment with an existing token-managed Tunnel.
+# SUBBOOST_PORT=127.0.0.1:8080 keeps the app off the public interface.
+services:
+  db:
+    image: ${SUBBOOST_POSTGRES_IMAGE:-postgres:16-alpine}
+    environment:
+      TZ: UTC
+      PGTZ: UTC
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  app:
+    image: ${SUBBOOST_LOCAL_IMAGE:-subboost-manager:local}
+    pull_policy: never
+    build:
+      args:
+        NODE_IMAGE: ${SUBBOOST_NODE_IMAGE:-node:22-alpine}
+    environment:
+      TZ: UTC
+      HOSTNAME: 0.0.0.0
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 12
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  cron:
+    image: ${SUBBOOST_CURL_IMAGE:-curlimages/curl:8.11.1}
+    depends_on:
+      app:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  tunnel:
+    image: ${SUBBOOST_TUNNEL_IMAGE:-cloudflare/cloudflared:2026.10.0}
+    restart: unless-stopped
+    user: "1000:1000"
+    network_mode: host
+    command: ["tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:20242", "run", "--token-file", "/run/secrets/tunnel-token"]
+    volumes:
+      - ${SUBBOOST_TUNNEL_TOKEN_FILE:?set SUBBOOST_TUNNEL_TOKEN_FILE}:/run/secrets/tunnel-token:ro
+    depends_on:
+      app:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:127.0.0.1"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

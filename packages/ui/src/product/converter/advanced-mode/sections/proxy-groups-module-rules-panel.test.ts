@@ -48,13 +48,16 @@ vi.mock("react", async (importOriginal) => {
 });
 
 vi.mock("@radix-ui/react-popover", () => ({
+  Anchor: (props: any) => React.createElement(React.Fragment, null, props.children),
+  Close: (props: any) => React.createElement(React.Fragment, null, props.children),
   Root: (props: any) => React.createElement(React.Fragment, null, props.children),
   Trigger: (props: any) => React.createElement(React.Fragment, null, props.children),
   Portal: (props: any) => React.createElement(React.Fragment, null, props.children),
-  Content: (props: any) => React.createElement("div", props, props.children),
+  Content: ({ children, sideOffset: _sideOffset, ...props }: any) => React.createElement("div", props, children),
   Arrow: () => null,
 }));
 vi.mock("lucide-react", () => ({
+  CircleHelp: () => null,
   HelpCircle: () => null,
   Plus: () => null,
   RotateCcw: () => null,
@@ -137,8 +140,8 @@ function baseProps(overrides: Record<string, unknown> = {}) {
     module: cnModule,
     enabledProxyGroups: ["cn", "auto"],
     hiddenProxyGroups: ["hidden"],
-    moduleRuleOverrides: {},
-    moduleRuleExclusions: {},
+    ruleSetsByTarget: {},
+    hiddenPresetRuleIds: {},
     customProxyGroups: [{ id: "custom-1", name: "Custom Group", rules: [] }],
     manualRules: [],
     manualRuleTargets: [{ name: "Auto" }],
@@ -153,6 +156,7 @@ function baseProps(overrides: Record<string, unknown> = {}) {
     onMoveManualRule: vi.fn(),
     onRemoveManualRule: vi.fn(),
     onRestoreRule: vi.fn(),
+    onResetRuleTarget: vi.fn(),
     cnIpNoResolve: true,
     onChangeCnIpNoResolve: vi.fn(),
     experimentalCnUseCnRuleSet: true,
@@ -225,11 +229,12 @@ describe("ProxyGroupsModuleRulesPanel", () => {
     await flushAsyncWork();
     expect(props.onMoveRule).toHaveBeenCalledWith("cn-ip", { kind: "custom", id: "custom-1" });
 
-    mocks.captures.buttons.find((button) => button["aria-label"] === "恢复 Removed 规则集").onClick();
-    expect(props.onRestoreRule).toHaveBeenCalledWith("removed-rule");
+    mocks.captures.buttons.find((button) => button["aria-label"] === "恢复默认目标 Removed 规则集").onClick();
+    expect(props.onResetRuleTarget).toHaveBeenCalledWith("removed-rule");
 
-    mocks.captures.manualRows[0].onMove(mocks.captures.manualRows[0].item, { name: "自动选择" });
-    expect(props.onMoveManualRule).toHaveBeenCalledWith("manual-1", "自动选择");
+    const manualTarget = { kind: "module", id: "auto", name: "自动选择" };
+    mocks.captures.manualRows[0].onMove(mocks.captures.manualRows[0].item, manualTarget);
+    expect(props.onMoveManualRule).toHaveBeenCalledWith("manual-1", manualTarget);
     mocks.captures.manualRows[0].onRemove({ index: 0 });
     expect(props.onRemoveManualRule).toHaveBeenCalledWith(0);
   });
@@ -287,7 +292,7 @@ describe("ProxyGroupsModuleRulesPanel", () => {
 
   it("normalizes exclusion keys and cleans up candidate rule loading paths", async () => {
     const props = baseProps({
-      moduleRuleExclusions: { cn: [" removed-rule ", " "], auto: ["auto-rule"] },
+      hiddenPresetRuleIds: { cn: [" removed-rule ", " "], auto: ["auto-rule"] },
     });
     renderPanel(props);
     await flushAsyncWork();
@@ -318,7 +323,7 @@ describe("ProxyGroupsModuleRulesPanel", () => {
       { id: "fallback-name", name: "   ", behavior: "domain", path: "rule-set/fallback.mrs", parentRuleId: 123 },
       { id: "parent-module", name: "Parent Module", behavior: "domain", path: "rule-set/parent.mrs", parentModuleId: "cn" },
     ]);
-    renderPanel(baseProps({ enabledProxyGroups: [" ", ""], moduleRuleExclusions: undefined }));
+    renderPanel(baseProps({ enabledProxyGroups: [" ", ""], hiddenPresetRuleIds: undefined }));
     await flushAsyncWork();
     expect((stateMock.setters[0] as any).lastValue).toEqual([
       { id: "fallback-name", name: "fallback-name", behavior: "domain", path: "rule-set/fallback.mrs", parentRuleId: undefined, parentModuleId: undefined },
@@ -389,7 +394,7 @@ describe("ProxyGroupsModuleRulesPanel", () => {
     mocks.isMoved.mockReturnValue(false);
     const props = baseProps({
       cnIpNoResolve: false,
-      moduleRuleExclusions: { cn: ["cn-ip"] },
+      hiddenPresetRuleIds: { cn: ["cn-ip"] },
     });
     renderPanel(props);
 

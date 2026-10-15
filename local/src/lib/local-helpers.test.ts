@@ -61,8 +61,11 @@ import {
 
 const originalEnv = {
   APP_URL: process.env.APP_URL,
+  DATABASE_URL: process.env.DATABASE_URL,
   ENCRYPTION_KEY: process.env.ENCRYPTION_KEY,
   GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+  JWT_SECRET: process.env.JWT_SECRET,
+  NODE_ENV: process.env.NODE_ENV,
 };
 
 function restoreEnv() {
@@ -92,6 +95,7 @@ describe("local lib helpers", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     restoreEnv();
   });
 
@@ -106,6 +110,25 @@ describe("local lib helpers", () => {
 
     delete process.env.APP_URL;
     expect(() => requireEnv("APP_URL")).toThrow("APP_URL is required");
+  });
+
+  it("uses local-only defaults during direct development startup", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    delete process.env.APP_URL;
+    delete process.env.DATABASE_URL;
+    delete process.env.ENCRYPTION_KEY;
+    delete process.env.JWT_SECRET;
+
+    expect(getAppUrl()).toBe("http://127.0.0.1:3001");
+    expect(isHttpsAppUrl()).toBe(false);
+    expect(requireEnv("DATABASE_URL")).toBe(
+      "postgresql://subboost_local_dev:subboost_local_dev_password@localhost:5432/subboost_local_dev?schema=public",
+    );
+    expect(requireEnv("ENCRYPTION_KEY")).toBe("subboost-local-dev-encryption-key-0001");
+    expect(requireEnv("JWT_SECRET")).toBe("subboost-local-dev-jwt-secret-00000001");
+
+    vi.stubEnv("NODE_ENV", "production");
+    expect(() => requireEnv("JWT_SECRET")).toThrow("JWT_SECRET is required");
   });
 
   it("loads current admin and setup state from the local session", async () => {
@@ -141,9 +164,20 @@ describe("local lib helpers", () => {
       status: 400,
       body: { error: "bad", code: "BAD_REQUEST" },
     });
-    await expect(readJsonBody(new Request("https://local.test", { method: "POST", body: "" }))).resolves.toEqual({});
-    await expect(readJsonBody(new Request("https://local.test", { method: "POST", body: "{bad" }))).resolves.toBeNull();
-    await expect(readJsonBody(new Request("https://local.test", { method: "POST", body: '{"name":" Ry "}' }))).resolves.toEqual({ name: " Ry " });
+    await expect(readJsonBody(new Request("https://local.test", { method: "POST", body: "" }), 1024)).resolves.toEqual({
+      ok: true,
+      value: {},
+    });
+    await expect(readJsonBody(new Request("https://local.test", { method: "POST", body: "{bad" }), 1024)).resolves.toEqual({
+      ok: false,
+      reason: "invalid_json",
+    });
+    await expect(
+      readJsonBody(new Request("https://local.test", { method: "POST", body: '{"name":" Ry "}' }), 1024)
+    ).resolves.toEqual({ ok: true, value: { name: " Ry " } });
+    await expect(
+      readJsonBody(new Request("https://local.test", { method: "POST", body: '{"too":"large"}' }), 4)
+    ).resolves.toEqual({ ok: false, reason: "too_large" });
     expect(getStringField({ name: " Ry " }, "name")).toBe("Ry");
     expect(getStringField({ name: 1 }, "name")).toBe("");
     expect(getStringField(null, "name")).toBe("");

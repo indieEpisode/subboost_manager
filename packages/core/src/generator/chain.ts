@@ -8,14 +8,22 @@
 
 import type { ParsedNode } from "@subboost/core/types/node";
 import type { DialerProxyGroup } from "@subboost/core/types/template-config";
+import { DEFAULT_LOAD_BALANCE_STRATEGY, type ProxyGroupGroupType } from "@subboost/core/types/config";
 import { DEFAULT_SUBBOOST_CONFIG } from "@subboost/core/config/defaults";
+import { buildTypedProxyGroup, uniqueProxyNames } from "./proxy-group-type";
 
 export interface DialerProxyGroupConfig {
   id: string;
   name: string;
   relayNodes: string[];      // 中转节点
   targetNodes: string[];     // 使用此中转的目标节点
-  type: "select" | "url-test";
+  type: ProxyGroupGroupType;
+}
+
+function resolveDialerGroupProxies(group: DialerProxyGroup): string[] {
+  if (group.type === "direct-first") return uniqueProxyNames(["DIRECT", ...group.relayNodes]);
+  if (group.type === "reject-first") return uniqueProxyNames(["REJECT", ...group.relayNodes]);
+  return uniqueProxyNames(group.relayNodes);
 }
 
 /**
@@ -29,23 +37,19 @@ export function generateDialerProxyGroups(
 ): Array<Record<string, unknown>> {
   const providerUse = proxyProviderNames.length > 0 ? { use: proxyProviderNames } : {};
   return groups
-    .filter((g) => g.relayNodes.length > 0)
+    .map((group) => ({ group, proxies: resolveDialerGroupProxies(group) }))
+    .filter(({ proxies }) => proxies.length > 0)
     .map((group) => {
-      const base: Record<string, unknown> = {
-        name: group.name,
-        type: group.type,
-        proxies: group.relayNodes,
-        ...providerUse,
-      };
-
-      // url-test 类型需要额外配置
-      if (group.type === "url-test") {
-        base.url = testUrl;
-        base.interval = testInterval;
-        base.lazy = true;
-      }
-
-      return base;
+      return buildTypedProxyGroup({
+        name: group.group.name,
+        groupType: group.group.type,
+        proxies: group.proxies,
+        testUrl: group.group.type === "url-test" ? group.group.testUrl || testUrl : testUrl,
+        testInterval,
+        strategy: group.group.strategy ?? DEFAULT_LOAD_BALANCE_STRATEGY,
+        extraFields: providerUse,
+        urlTestLazy: true,
+      });
     });
 }
 
@@ -146,54 +150,4 @@ export function validateDialerConfig(
     valid: errors.length === 0,
     errors,
   };
-}
-
-/**
- * 从节点列表中推荐中转组合
- * 基于节点名称中的地区信息进行智能匹配
- */
-export function suggestDialerGroups(
-  nodes: ParsedNode[]
-): Array<{ name: string; relayNodes: string[]; description: string }> {
-  const suggestions: Array<{ name: string; relayNodes: string[]; description: string }> = [];
-
-  // 地区关键词
-  const regions: Record<string, { keywords: string[]; emoji: string; name: string }> = {
-    us: { keywords: ["美国", "US", "USA", "United States", "洛杉矶", "纽约", "西雅图"], emoji: "🇺🇸", name: "美国" },
-    hk: { keywords: ["香港", "HK", "Hong Kong", "港"], emoji: "🇭🇰", name: "香港" },
-    jp: { keywords: ["日本", "JP", "Japan", "东京", "大阪"], emoji: "🇯🇵", name: "日本" },
-    sg: { keywords: ["新加坡", "SG", "Singapore", "狮城"], emoji: "🇸🇬", name: "新加坡" },
-    tw: { keywords: ["台湾", "TW", "Taiwan", "台北"], emoji: "🇹🇼", name: "台湾" },
-    kr: { keywords: ["韩国", "KR", "Korea", "首尔"], emoji: "🇰🇷", name: "韩国" },
-  };
-
-  // 按地区分类节点
-  const nodesByRegion: Record<string, string[]> = {};
-
-  for (const node of nodes) {
-    const name = node.name.toLowerCase();
-    for (const [region, config] of Object.entries(regions)) {
-      if (config.keywords.some((kw) => name.includes(kw.toLowerCase()))) {
-        if (!nodesByRegion[region]) {
-          nodesByRegion[region] = [];
-        }
-        nodesByRegion[region].push(node.name);
-        break;
-      }
-    }
-  }
-
-  // 生成推荐的中转组
-  for (const [region, config] of Object.entries(regions)) {
-    const regionNodes = nodesByRegion[region] || [];
-    if (regionNodes.length > 0) {
-      suggestions.push({
-        name: `${config.emoji} ${config.name}中转`,
-        relayNodes: regionNodes.slice(0, 5), // 最多取5个节点
-        description: `使用${config.name}节点作为中转`,
-      });
-    }
-  }
-
-  return suggestions;
 }

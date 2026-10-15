@@ -1,13 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { getModulesForTemplate } from "@subboost/core/generator/proxy-groups";
+import { getModulesForTemplate } from "../generator/proxy-groups";
 import {
   SUBBOOST_TEMPLATE_CONFIG_SCHEMA,
   validateSubBoostTemplateConfig,
-} from "@subboost/core/templates/config-template";
+} from "./config-template";
 import { DEFAULT_LOAD_BALANCE_STRATEGY } from "@subboost/core/types/config";
 import { expectInvalid, validConfig } from "./config-template.test-helpers";
 
 describe("validateSubBoostTemplateConfig", () => {
+  it("round-trips independent test URLs and rejects malformed dialer addresses", () => {
+    const testUrl = "https://local.subboost.test/probe";
+    const dialer = { id: "relay", name: "Relay", type: "url-test" as const, relayNodes: ["A"], targetNodes: ["B"], testUrl };
+    const result = validateSubBoostTemplateConfig(validConfig({
+      proxyGroupAdvanced: { auto: { testUrl } },
+      customProxyGroups: [{ id: "custom", name: "Custom", emoji: "", groupType: "url-test", advanced: { testUrl } }],
+      dialerProxyGroups: [dialer],
+    }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.config.proxyGroupAdvanced?.auto.testUrl).toBe(testUrl);
+    expect(result.config.customProxyGroups[0].advanced?.testUrl).toBe(testUrl);
+    expect(result.config.dialerProxyGroups[0].testUrl).toBe(testUrl);
+    expect(validateSubBoostTemplateConfig(validConfig({dialerProxyGroups: [{...dialer, testUrl: "invalid"}]})).ok).toBe(false);
+  });
   it("accepts a minimal v1 config template", () => {
     const result = validateSubBoostTemplateConfig(validConfig());
 
@@ -49,39 +64,38 @@ describe("validateSubBoostTemplateConfig", () => {
   });
 
   it("normalizes rich template config fields", () => {
-    const moduleId = getModulesForTemplate("minimal")[0];
+    const moduleId = "ai";
     const result = validateSubBoostTemplateConfig(
       validConfig({
+        enabledProxyGroups: [...getModulesForTemplate("minimal"), moduleId],
         hiddenProxyGroups: [],
         customProxyGroups: [
           {
             id: "custom",
             name: "Custom",
             emoji: "",
+            enabled: false,
+            memberSource: "filtered-nodes",
+            includeInGroupMembers: false,
             groupType: "load-balance",
-            rules: [
-              {
-                id: "custom-rule",
-                name: "Custom Rule",
-                behavior: "domain",
-                url: "https://rules.example.com/custom.mrs",
-                noResolve: false,
-              },
-            ],
           },
         ],
-        filteredProxyGroups: [
+        customRuleSets: [
           {
-            id: "filtered",
-            name: "Filtered",
-            enabled: true,
-            groupType: "load-balance",
-            sourceIds: ["source-a", "source-a", ""],
-            regions: ["us", "hk"],
-            excludedNodeNames: ["Node A", "Node A"],
-            includeRegex: " US ",
-            excludeRegex: "IPv6",
-            emoji: "F",
+            id: "custom-rule",
+            name: "Custom Rule",
+            behavior: "domain",
+            path: "https://rules.example.com/custom.mrs",
+            target: { kind: "custom", id: "custom" },
+            noResolve: false,
+          },
+          {
+            id: "extra",
+            name: "Extra",
+            behavior: "ipcidr",
+            path: "geoip/private.mrs",
+            target: "Renamed",
+            noResolve: true,
           },
         ],
         customRules: [
@@ -89,7 +103,7 @@ describe("validateSubBoostTemplateConfig", () => {
             id: "custom-rule-a",
             type: "DOMAIN-SUFFIX",
             value: " example.com ",
-            target: "DIRECT",
+            target: { kind: "module", id: "select" },
             noResolve: true,
           },
         ],
@@ -103,26 +117,14 @@ describe("validateSubBoostTemplateConfig", () => {
             enabled: false,
           },
         ],
-        moduleRuleOverrides: {
-          [moduleId]: [
-            {
-              id: "extra",
-              name: "Extra",
-              behavior: "ipcidr",
-              path: "geoip/private.mrs",
-              noResolve: true,
-            },
-          ],
-        },
-        moduleRuleExclusions: {
-          [moduleId]: ["rule-a", "rule-a", ""],
+        builtinRuleEdits: {
+          [`module:${moduleId}:openai`]: { enabled: false, target: { kind: "custom", id: "custom" } },
         },
         proxyGroupNameOverrides: {
           [moduleId]: " Renamed ",
           empty: " ",
         },
         ruleOrder: ["missing", "missing"],
-        allRulesOrderEditingEnabled: true,
       })
     );
 
@@ -132,24 +134,35 @@ describe("validateSubBoostTemplateConfig", () => {
       id: "custom",
       name: "Custom",
       emoji: "",
+      memberSource: "filtered-nodes",
+      includeInGroupMembers: false,
+      enabled: false,
       groupType: "load-balance",
       strategy: DEFAULT_LOAD_BALANCE_STRATEGY,
     });
-    expect(result.config.filteredProxyGroups?.[0]).toMatchObject({
-      id: "filtered",
-      groupType: "load-balance",
-      strategy: DEFAULT_LOAD_BALANCE_STRATEGY,
-      sourceIds: ["source-a"],
-      regions: ["us", "hk"],
-      excludedNodeNames: ["Node A"],
-      includeRegex: "US",
-      excludeRegex: "IPv6",
-      emoji: "F",
-    });
+    expect(result.config.customRuleSets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "custom-rule",
+          name: "Custom Rule",
+          behavior: "domain",
+          path: "https://rules.example.com/custom.mrs",
+          target: { kind: "custom", id: "custom" },
+        }),
+        expect.objectContaining({
+          id: "extra",
+          behavior: "ipcidr",
+          path: "geoip/private.mrs",
+          noResolve: true,
+        }),
+      ])
+    );
+    expect(result.config.proxyGroupAdvancedModeEnabled).toBe(true);
     expect(result.config.customRules[0]).toMatchObject({
       id: "custom-rule-a",
       value: "example.com",
       noResolve: true,
+      target: { kind: "module", id: "select" },
     });
     expect(result.config.dialerProxyGroups[0]).toMatchObject({
       id: "relay",
@@ -158,15 +171,94 @@ describe("validateSubBoostTemplateConfig", () => {
       targetNodes: ["Target A"],
       enabled: false,
     });
-    expect(result.config.moduleRuleOverrides?.[moduleId]?.[0]).toMatchObject({
-      id: "extra",
-      behavior: "ipcidr",
-      path: "geoip/private.mrs",
-      noResolve: true,
+    expect(result.config.builtinRuleEdits?.[`module:${moduleId}:openai`]).toEqual({
+      enabled: false,
+      target: { kind: "custom", id: "custom" },
     });
-    expect(result.config.moduleRuleExclusions?.[moduleId]).toEqual(["rule-a"]);
     expect(result.config.proxyGroupNameOverrides).toEqual({ [moduleId]: "Renamed" });
-    expect(result.config.allRulesOrderEditingEnabled).toBe(true);
+    expect(result.config).not.toHaveProperty("moduleRuleOverrides");
+    expect(result.config).not.toHaveProperty("moduleRuleExclusions");
+    expect(result.config).not.toHaveProperty("allRulesOrderEditingEnabled");
+  });
+
+  it("drops ordered rules that target disabled custom proxy groups", () => {
+    const result = validateSubBoostTemplateConfig(
+      validConfig({
+        customProxyGroups: [
+          {
+            id: "disabled-group",
+            name: "Disabled Group",
+            emoji: "",
+            groupType: "select",
+            enabled: false,
+          },
+        ],
+        customRules: [
+          {
+            id: "disabled-target",
+            type: "DOMAIN",
+            value: "disabled.example.com",
+            target: { kind: "custom", id: "disabled-group" },
+          },
+          {
+            id: "active-target",
+            type: "DOMAIN",
+            value: "active.example.com",
+            target: "DIRECT",
+          },
+        ],
+        ruleOrder: ["custom-rule:disabled-target", "custom-rule:active-target"],
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.config.ruleOrder).toEqual(["custom-rule:active-target"]);
+  });
+
+  it("uses defaults when optional compatibility fields are omitted", () => {
+    const [moduleId] = getModulesForTemplate("minimal");
+    const result = validateSubBoostTemplateConfig(
+      validConfig({
+        hiddenProxyGroups: undefined as never,
+        proxyGroupAdvanced: {
+          [moduleId]: {
+            sourceIds: ["source-a"],
+          },
+        },
+        customRuleSets: undefined as never,
+        builtinRuleEdits: undefined as never,
+        ruleOrder: undefined as never,
+        proxyGroupNameOverrides: undefined as never,
+        cnIpNoResolve: undefined as never,
+        experimentalCnUseCnRuleSet: undefined as never,
+      })
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.config.hiddenProxyGroups).toEqual([]);
+    expect(result.config.proxyGroupAdvanced?.[moduleId]).toEqual({ sourceIds: ["source-a"] });
+    expect(result.config.customRuleSets).toEqual([]);
+    expect(result.config.builtinRuleEdits).toEqual({});
+    expect(result.config.proxyGroupNameOverrides).toEqual({});
+    expect(result.config).not.toHaveProperty("cnIpNoResolve");
+    expect(result.config).not.toHaveProperty("experimentalCnUseCnRuleSet");
+  });
+
+  it("rejects removed rule-model compatibility fields", () => {
+    expectInvalid({ moduleRuleOverrides: {} } as never, "模板配置包含已移除字段: moduleRuleOverrides");
+    expectInvalid({ moduleRuleExclusions: {} } as never, "模板配置包含已移除字段: moduleRuleExclusions");
+    expectInvalid({ allRulesOrderEditingEnabled: true } as never, "模板配置包含已移除字段: allRulesOrderEditingEnabled");
+    const removedFilteredGroupsField = `filtered${"ProxyGroups"}`;
+    expectInvalid(
+      { [removedFilteredGroupsField]: [] } as never,
+      `模板配置包含已移除字段: ${removedFilteredGroupsField}`
+    );
+    expectInvalid(
+      { customProxyGroups: [{ id: "custom", name: "Custom", emoji: "", groupType: "select", rules: [] }] } as never,
+      "模板配置包含已移除字段: customProxyGroups[0].rules"
+    );
   });
 
   it("rejects template configs that hide every enabled module", () => {

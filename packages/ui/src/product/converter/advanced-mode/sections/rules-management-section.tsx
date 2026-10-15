@@ -5,9 +5,11 @@ import { ArrowDown, ArrowUp, ListOrdered } from "lucide-react";
 import { Badge } from "@subboost/ui/components/ui/badge";
 import { confirmDialog } from "@subboost/ui/components/ui/confirm-dialog";
 import { Input } from "@subboost/ui/components/ui/input";
+import { IconButton } from "@subboost/ui/components/ui/icon-button";
 import { Switch } from "@subboost/ui/components/ui/switch";
 import {
   buildGeneratedRuleEntries,
+  hasFullRuleOrderKeys,
   type GeneratedRuleEntry,
 } from "@subboost/core/generator/rules";
 import { useConfigStore } from "@subboost/ui/store/config-store";
@@ -43,18 +45,16 @@ export function RulesManagementSection({
     enabledProxyGroups,
     customRules,
     customProxyGroups,
-    moduleRuleOverrides,
-    moduleRuleExclusions,
+    customRuleSets,
+    builtinRuleEdits,
     proxyGroupNameOverrides,
     cnIpNoResolve,
     experimentalCnUseCnRuleSet,
     ruleOrder,
     setRuleOrder,
-    allRulesOrderEditingEnabled,
-    setAllRulesOrderEditingEnabled,
   } = useConfigStore();
   const [orderDrafts, setOrderDrafts] = React.useState<Record<string, string>>({});
-  const allRulesMode = allRulesOrderEditingEnabled;
+  const allRulesMode = ruleOrder.length === 0 || hasFullRuleOrderKeys(ruleOrder);
 
   const entries = React.useMemo(
     () =>
@@ -62,8 +62,8 @@ export function RulesManagementSection({
         enabledModules: enabledProxyGroups,
         customRules,
         customProxyGroups,
-        moduleRuleOverrides,
-        moduleRuleExclusions,
+        customRuleSets,
+        builtinRuleEdits,
         proxyGroupNameOverrides,
         cnIpNoResolve,
         experimentalCnUseCnRuleSet,
@@ -72,23 +72,24 @@ export function RulesManagementSection({
     [
       cnIpNoResolve,
       customProxyGroups,
+      customRuleSets,
       customRules,
       enabledProxyGroups,
       experimentalCnUseCnRuleSet,
-      moduleRuleOverrides,
-      moduleRuleExclusions,
+      builtinRuleEdits,
       proxyGroupNameOverrides,
       ruleOrder,
     ]
   );
 
-  const editableEntries = React.useMemo(() => entries.filter((entry) => entry.editable), [entries]);
   const preMatchEntries = React.useMemo(
     () => entries.filter((entry) => entry.key !== "special:match"),
     [entries]
   );
   const preMatchKeys = React.useMemo(() => preMatchEntries.map((entry) => entry.key), [preMatchEntries]);
+  const editableEntries = React.useMemo(() => entries.filter((entry) => entry.editable), [entries]);
   const editableKeys = React.useMemo(() => editableEntries.map((entry) => entry.key), [editableEntries]);
+  const movableKeys = allRulesMode ? preMatchKeys : editableKeys;
 
   const applyRuleOrder = React.useCallback(
     (nextRuleOrder: string[]) => {
@@ -106,36 +107,36 @@ export function RulesManagementSection({
 
   const moveRule = React.useCallback(
     (key: string, direction: "up" | "down") => {
-      const from = preMatchKeys.indexOf(key);
+      const from = movableKeys.indexOf(key);
       if (from < 0) return;
-      const to = clamp(direction === "up" ? from - 1 : from + 1, 0, preMatchKeys.length - 1);
+      const to = clamp(direction === "up" ? from - 1 : from + 1, 0, movableKeys.length - 1);
       if (to === from) return;
-      const next = preMatchKeys.slice();
+      const next = movableKeys.slice();
       const [item] = next.splice(from, 1);
       next.splice(to, 0, item);
       applyRuleOrder(next);
     },
-    [applyRuleOrder, preMatchKeys]
+    [applyRuleOrder, movableKeys]
   );
 
   const setRuleAbsoluteOrder = React.useCallback(
     (key: string, absoluteOrder: number) => {
-      const from = preMatchKeys.indexOf(key);
+      const from = movableKeys.indexOf(key);
       if (from < 0 || !Number.isFinite(absoluteOrder)) return;
-      const to = clamp(Math.floor(absoluteOrder) - 1, 0, preMatchEntries.length - 1);
+      const to = clamp(Math.floor(absoluteOrder) - 1, 0, movableKeys.length - 1);
       if (to === from) return;
-      const next = preMatchKeys.slice();
+      const next = movableKeys.slice();
       const [item] = next.splice(from, 1);
       next.splice(to, 0, item);
       applyRuleOrder(next);
     },
-    [applyRuleOrder, preMatchEntries.length, preMatchKeys]
+    [applyRuleOrder, movableKeys]
   );
 
   const handleToggleAllRulesMode = React.useCallback(
     async (checked: boolean) => {
       if (!checked) {
-        setAllRulesOrderEditingEnabled(false);
+        applyRuleOrder(editableKeys);
         return;
       }
 
@@ -147,7 +148,7 @@ export function RulesManagementSection({
               <span className="font-medium text-amber-200">警告：</span>
               开启后，你可以移动任意规则到任意位置，这会改变分流优先级与命中结果。
             </span>
-            <span className="mt-3 block leading-6 text-white/65">
+            <span className="mt-3 block leading-6 text-fg-65">
               如果你不知道调整规则顺序的影响，请不要动它。
             </span>
           </span>
@@ -157,9 +158,9 @@ export function RulesManagementSection({
         variant: "warning",
       });
       if (!ok) return;
-      setAllRulesOrderEditingEnabled(true);
+      applyRuleOrder(preMatchKeys);
     },
-    [setAllRulesOrderEditingEnabled]
+    [applyRuleOrder, editableKeys, preMatchKeys]
   );
 
   return (
@@ -178,16 +179,17 @@ export function RulesManagementSection({
 
       {isExpanded && (
         <div className="mt-2 pl-6 space-y-2">
-          <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-2">
+          <div className="rounded-lg border border-ink/10 bg-ink/5 px-3 py-2">
             <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-              <div className="min-w-0 flex-[1_1_13rem] text-[11px] leading-5 text-white/60">
+              <div className="min-w-0 flex-[1_1_13rem] text-[11px] leading-5 text-fg-60">
                 {allRulesMode
                   ? "已开启全规则排序：可移动任意规则，但 MATCH 固定最后。"
                   : "默认只能调整自定义规则顺序。"}
               </div>
               <div className="ml-auto flex shrink-0 items-center gap-2">
-                <span className="text-[11px] whitespace-nowrap text-white/55">调整所有规则顺序</span>
+                <span className="text-[11px] whitespace-nowrap text-fg-55">调整所有规则顺序</span>
                 <Switch
+                  aria-label="调整所有规则顺序"
                   checked={allRulesMode}
                   onCheckedChange={handleToggleAllRulesMode}
                   disabled={preMatchEntries.length <= 1}
@@ -196,14 +198,15 @@ export function RulesManagementSection({
             </div>
           </div>
 
-          <div className="max-h-[460px] overflow-y-auto overflow-x-hidden rounded-lg border border-white/10 bg-black/10 pr-1 custom-scrollbar">
+          <div className="max-h-[460px] overflow-y-auto overflow-x-hidden rounded-lg border border-ink/10 bg-shade/10 pr-1 custom-scrollbar">
             {entries.map((entry, index) => {
-              const fullIndex = preMatchKeys.indexOf(entry.key);
+              const movableIndex = movableKeys.indexOf(entry.key);
               const canEditOrder = entry.key !== "special:match" && (allRulesMode || entry.editable);
-              const canMoveUp = canEditOrder && fullIndex > 0;
-              const canMoveDown = canEditOrder && fullIndex >= 0 && fullIndex < preMatchKeys.length - 1;
-              const absoluteOrder = index + 1;
+              const canMoveUp = canEditOrder && movableIndex > 0;
+              const canMoveDown = canEditOrder && movableIndex >= 0 && movableIndex < movableKeys.length - 1;
+              const absoluteOrder = allRulesMode ? index + 1 : movableIndex + 1;
               const displayDetail = getRuleDisplayDetail(entry);
+              const displayTarget = entry.target.trim() || "目标分流组不可用";
               const shouldShowSourceLabel =
                 entry.sourceLabel.trim() !== entry.target.trim() &&
                 entry.sourceLabel.trim() !== "系统规则";
@@ -211,24 +214,24 @@ export function RulesManagementSection({
               return (
                 <div
                   key={entry.key}
-                  className="border-b border-white/10 bg-white/5 px-3 py-1.5 last:border-b-0"
+                  className="border-b border-ink/10 bg-ink/5 px-3 py-1.5 last:border-b-0"
                 >
                   <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
                     <div className="flex min-w-0 items-start gap-1.5">
-                      <div className="w-4 shrink-0 pt-1 text-right text-[10px] tabular-nums text-white/35">
+                      <div className="w-4 shrink-0 pt-1 text-right text-[10px] tabular-nums text-fg-35">
                         {absoluteOrder}
                       </div>
 
                       <div className="min-w-0 flex-1 space-y-1">
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="min-w-0 max-w-full break-words text-xs font-medium leading-5 text-white">{entry.summary}</span>
+                          <span className="min-w-0 max-w-full break-words text-xs font-medium leading-5 text-fg">{entry.summary}</span>
                           {shouldShowSourceLabel && (
-                            <Badge variant="outline" className="max-w-full border-white/10 bg-white/5 text-white/60">
+                            <Badge variant="outline" className="max-w-full shrink-0 whitespace-nowrap border-ink/10 bg-ink/5 text-fg-60">
                               {entry.sourceLabel}
                             </Badge>
                           )}
-                          <Badge variant="outline" className="max-w-full border-indigo-500/30 bg-indigo-500/10 text-indigo-200">
-                            {entry.target}
+                          <Badge variant="outline" className="max-w-full shrink-0 whitespace-nowrap border-indigo-500/30 bg-indigo-500/10 text-indigo-200">
+                            {displayTarget}
                           </Badge>
                           {entry.noResolve && (
                             <Badge variant="outline" className="shrink-0 border-amber-500/30 bg-amber-500/10 text-amber-200">
@@ -237,14 +240,14 @@ export function RulesManagementSection({
                           )}
                         </div>
 
-                        <div className="rule-management-entry-detail font-mono text-[11px] break-all text-white/45" title={entry.text}>
+                        <div className="rule-management-entry-detail font-mono text-[11px] break-all text-fg-45" title={entry.text}>
                           {displayDetail}
                         </div>
                       </div>
                     </div>
 
                     <div className="flex min-h-10 min-w-[8.75rem] shrink-0 items-center justify-end gap-1.5">
-                      <span className="text-[11px] whitespace-nowrap text-white/45">顺序:</span>
+                      <span className="text-[11px] whitespace-nowrap text-fg-45">顺序:</span>
                       <Input
                         value={
                           Object.prototype.hasOwnProperty.call(orderDrafts, entry.key)
@@ -289,25 +292,27 @@ export function RulesManagementSection({
                         inputMode="numeric"
                         title="最终规则行号（1=最前）"
                         disabled={!canEditOrder}
-                        className="h-8 w-16 shrink-0 rounded-lg border-white/10 bg-white/10 px-1 text-center text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                        className="h-8 w-16 shrink-0 rounded-lg border-ink/10 bg-ink/10 px-1 text-center text-xs disabled:cursor-not-allowed disabled:opacity-50"
                       />
                       <div className="flex flex-col">
-                        <button
+                        <IconButton
+                          label="上移规则"
+                          variant="ghost"
                           onClick={() => moveRule(entry.key, "up")}
                           disabled={!canMoveUp}
-                          className="flex h-4 w-5 items-center justify-center text-white/30 transition-colors hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-30"
-                          title="上移"
+                          className="flex h-4 w-5 items-center justify-center text-fg-30 transition-colors hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-30"
                         >
                           <ArrowUp className="h-3 w-3" />
-                        </button>
-                        <button
+                        </IconButton>
+                        <IconButton
+                          label="下移规则"
+                          variant="ghost"
                           onClick={() => moveRule(entry.key, "down")}
                           disabled={!canMoveDown}
-                          className="flex h-4 w-5 items-center justify-center text-white/30 transition-colors hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-30"
-                          title="下移"
+                          className="flex h-4 w-5 items-center justify-center text-fg-30 transition-colors hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-30"
                         >
                           <ArrowDown className="h-3 w-3" />
-                        </button>
+                        </IconButton>
                       </div>
                     </div>
                   </div>

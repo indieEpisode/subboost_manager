@@ -21,6 +21,8 @@ import {
   type SubscriptionImportErrorInfo,
 } from "@subboost/core/subscription/import-error";
 import { stripImportedNodeControlFieldsFromList } from "@subboost/core/subscription/imported-node-controls";
+import { getValidDialerRelayGroupNames } from "@subboost/core/subscription/dialer-relay-group-names";
+import { reconcileNodeNameReferences } from "@subboost/core/subscription/node-name-references";
 import { tryNormalizeSubscriptionUrlInput } from "@subboost/core/subscription/url-input";
 import type { ConfigActions, SubscriptionSource } from "./definitions";
 import {
@@ -33,6 +35,7 @@ import {
   withUniqueNodeNames,
 } from "./definitions";
 import type { GetState, SetAndGenerateConfig, SetState, StoreState } from "./store-types";
+import { SourceImportOperationGuard, type SingleSourceImportOperation } from "./source-import-operation";
 
 type SourceActions = Pick<
   ConfigActions,
@@ -63,18 +66,46 @@ function mergeNodeSourceIds(existing: ParsedNode, sourceIds: Set<string>): Parse
   return { ...existingRecord, [SOURCE_IDS_KEY]: Array.from(sourceIds) } as unknown as ParsedNode;
 }
 
+function filterAvailableNames(names: string[], availableNames: ReadonlySet<string>): string[] {
+  const seen = new Set<string>();
+  return names.map((name) => name.trim()).filter((name) => {
+    if (!name || seen.has(name)) return false;
+    seen.add(name);
+    return availableNames.has(name);
+  });
+}
+
 function filterDialerProxyGroupsByAvailableNames(
   dialerProxyGroups: StoreState["dialerProxyGroups"],
-  availableNames: Set<string>
+  availableNames: Set<string>,
+  config: Pick<StoreState, "customProxyGroups" | "enabledProxyGroups" | "proxyGroupNameOverrides">
 ): StoreState["dialerProxyGroups"] {
+  const availableGroupNames = getValidDialerRelayGroupNames({
+    customProxyGroups: config.customProxyGroups,
+    enabledGroups: config.enabledProxyGroups,
+    proxyGroupNameOverrides: config.proxyGroupNameOverrides,
+  });
+  const availableRelayNames = new Set(["DIRECT", ...availableNames, ...availableGroupNames]);
   return dialerProxyGroups.map((group) => ({
     ...group,
-    relayNodes: group.relayNodes.filter((name) => name === "DIRECT" || availableNames.has(name)),
-    targetNodes: group.targetNodes.filter((name) => availableNames.has(name)),
+    relayNodes: filterAvailableNames(group.relayNodes, availableRelayNames),
+    targetNodes: filterAvailableNames(group.targetNodes, availableNames),
   }));
 }
 
 export function createSourceActions(set: SetState, get: GetState, setAndGenerateConfig: SetAndGenerateConfig): SourceActions {
+  const importOperations = new SourceImportOperationGuard(() => get().draftRevision ?? 0);
+  const discardStaleSingle = (operation: SingleSourceImportOperation): boolean => {
+    if (importOperations.isSingleCurrent(get().sources, operation)) return false;
+    if (importOperations.ownsSingle(operation)) {
+      set((state) => ({
+        sources: state.sources.map((source) => source.id === operation.sourceId ? { ...source, parsing: false } : source),
+      }));
+    }
+    importOperations.finishSingle(operation);
+    return true;
+  };
+
   return {
     // 设置订阅源
     setSources: (sources: SubscriptionSource[]) => {
@@ -103,7 +134,7 @@ export function createSourceActions(set: SetState, get: GetState, setAndGenerate
           nextListenerPorts[name] = port;
         }
 
-        const nextDialerProxyGroups = filterDialerProxyGroupsByAvailableNames(state.dialerProxyGroups, availableNames);
+        const nextDialerProxyGroups = filterDialerProxyGroupsByAvailableNames(state.dialerProxyGroups, availableNames, state);
 
         return {
           sources,
@@ -116,7 +147,11 @@ export function createSourceActions(set: SetState, get: GetState, setAndGenerate
 
     // 解析订阅内容
     parseContent: (content: string) => {
-      set({ isLoading: true });
+      importOperations.cancelAll();
+      set((state) => ({
+        isLoading: true,
+        sources: state.sources.map((source) => (source.parsing ? { ...source, parsing: false } : source)),
+      }));
 
       try {
         const result: ParseResult = parseSubscription(content);
@@ -165,6 +200,7 @@ export function createSourceActions(set: SetState, get: GetState, setAndGenerate
       const { sources } = get();
       const source = sources.find((s) => s.id === sourceId);
       if (!source || !source.content.trim()) return;
+      const operation = importOperations.startSingle(source);
 
       const currentSourceContent =
         source.type === "url"
@@ -181,11 +217,12 @@ export function createSourceActions(set: SetState, get: GetState, setAndGenerate
       const lastNameTemplate = typeof source.lastParsedNameTemplate === "string" ? source.lastParsedNameTemplate.trim() : "";
 
       // 标记为解析中
-      set({
-        sources: sources.map((s) =>
+      set((state) => ({
+        isLoading: false,
+        sources: state.sources.map((s) =>
           s.id === sourceId ? { ...s, parsing: true, error: undefined, errorInfo: undefined } : s
         ),
-      });
+      }));
 
       try {
         let contentToParse = source.content;
@@ -204,6 +241,8 @@ export function createSourceActions(set: SetState, get: GetState, setAndGenerate
             throw new Error("只支持 HTTP/HTTPS url");
           }
 
+          if (discardStaleSingle(operation)) return;
+
           setAndGenerateConfig((state) => {
             const baseNodes = detachSourceNodesFromState(state.nodes, sourceId).nodes;
 
@@ -215,7 +254,9 @@ export function createSourceActions(set: SetState, get: GetState, setAndGenerate
               nextListenerPorts[name] = port;
             }
 
-            const nextDialerProxyGroups = filterDialerProxyGroupsByAvailableNames(state.dialerProxyGroups, availableNames);
+            const nextDialerProxyGroups = filterDialerProxyGroupsByAvailableNames(
+              state.dialerProxyGroups, availableNames, state
+            );
 
             return {
               nodes: baseNodes,
@@ -240,6 +281,7 @@ export function createSourceActions(set: SetState, get: GetState, setAndGenerate
               parseErrors: [],
             };
           });
+          importOperations.finishSingle(operation);
           return;
         }
 
@@ -279,6 +321,8 @@ export function createSourceActions(set: SetState, get: GetState, setAndGenerate
           currentNameTemplate,
         });
 
+        if (discardStaleSingle(operation)) return;
+
         // 刷新此订阅源解析出的节点：尽量保留用户顺序/手动改名，仅更新节点内容与来源归属。
         setAndGenerateConfig((state) => {
           const merged = mergeParsedSourceNodes(state.nodes, parsedNodes, state.deletedNodeNames, {
@@ -288,47 +332,25 @@ export function createSourceActions(set: SetState, get: GetState, setAndGenerate
             lastTag,
             lastNameTemplate,
             treatAsNewSource,
+            deletedNodes: state.deletedNodes,
           });
 
           const nextNodes = merged.nodes;
-          const availableNames = new Set(nextNodes.map((n) => n.name));
-          const nextListenerPorts: Record<string, number> = {};
-          for (const [name, port] of Object.entries(state.listenerPorts)) {
-            const mappedName = merged.renameMap.get(name) ?? name;
-            if (!availableNames.has(mappedName)) continue;
-            if (typeof port !== "number" || !Number.isInteger(port)) continue;
-            nextListenerPorts[mappedName] = port;
-          }
-
-          const replaceNames = (list: string[], opts?: { keepDirect?: boolean }) => {
-            const out: string[] = [];
-            const seen = new Set<string>();
-            for (const item of list) {
-              if (opts?.keepDirect && item === "DIRECT") {
-                if (!seen.has(item)) out.push(item);
-                seen.add(item);
-                continue;
-              }
-              const next = merged.renameMap.get(item) ?? item;
-              if (seen.has(next)) continue;
-              seen.add(next);
-              out.push(next);
-            }
-            return out;
-          };
-
-          const nextDialerProxyGroups = state.dialerProxyGroups.map((g) => {
-            const relayNodes = replaceNames(g.relayNodes, { keepDirect: true }).filter(
-              (n) => n === "DIRECT" || availableNames.has(n)
-            );
-            const targetNodes = replaceNames(g.targetNodes).filter((n) => availableNames.has(n));
-            return { ...g, relayNodes, targetNodes };
-          });
+          const reconciledReferences = reconcileNodeNameReferences(
+            {
+              listenerPorts: state.listenerPorts,
+              dialerProxyGroups: state.dialerProxyGroups,
+              proxyGroupAdvanced: state.proxyGroupAdvanced,
+              customProxyGroups: state.customProxyGroups,
+              enabledGroups: state.enabledProxyGroups,
+              proxyGroupNameOverrides: state.proxyGroupNameOverrides,
+            },
+            { nodes: nextNodes, renameMap: merged.renameMap }
+          );
 
           return {
             nodes: nextNodes,
-            listenerPorts: nextListenerPorts,
-            dialerProxyGroups: nextDialerProxyGroups,
+            ...reconciledReferences,
             sources: state.sources.map((s) =>
               s.id === sourceId
                 ? {
@@ -353,7 +375,9 @@ export function createSourceActions(set: SetState, get: GetState, setAndGenerate
             parseErrors: result.errors.map(sanitizePublicErrorText).filter((e) => e !== ""),
           };
         });
+        importOperations.finishSingle(operation);
       } catch (error) {
+        if (discardStaleSingle(operation)) return;
         const baseInfo = toSubscriptionImportErrorInfo(error);
         const shouldHintProxyProviders =
           source.type === "url" &&
@@ -382,12 +406,18 @@ export function createSourceActions(set: SetState, get: GetState, setAndGenerate
               : s
           ),
         }));
+        importOperations.finishSingle(operation);
       }
     },
 
     // 解析多个订阅源
     parseMultipleSources: async (sources: SubscriptionSource[]) => {
-      set({ isLoading: true, parseErrors: [] });
+      const operation = importOperations.startBatch(sources);
+      set((state) => ({
+        isLoading: true,
+        parseErrors: [],
+        sources: state.sources.map((source) => (source.parsing ? { ...source, parsing: false } : source)),
+      }));
 
       const allNodes: ParsedNode[] = [];
       const allErrors: string[] = [];
@@ -573,21 +603,50 @@ export function createSourceActions(set: SetState, get: GetState, setAndGenerate
       // 确保 name 全局唯一（Clash 要求 proxies.name 唯一）
       const uniqueNamedNodes = withUniqueNodeNames(uniqueNodes, new Set<string>());
 
+      if (!importOperations.isBatchCurrent(get().sources, operation)) {
+        if (importOperations.ownsBatch(operation)) set({ isLoading: false });
+        importOperations.finishBatch(operation);
+        return;
+      }
+
       setAndGenerateConfig((state) => {
         const deleted = new Set(state.deletedNodeNames);
-        const normalized = uniqueNamedNodes
-          .map((node) => {
+        const normalizedCandidates = uniqueNamedNodes.map((node) => {
+          const record = node as unknown as Record<string, unknown>;
+          const origin =
+            typeof record["_originName"] === "string" && record["_originName"].trim()
+              ? String(record["_originName"])
+              : node.name;
+          return origin === record["_originName"]
+            ? node
+            : ({ ...record, _originName: origin } as unknown as ParsedNode);
+        });
+        const originCounts = new Map<string, number>();
+        for (const node of normalizedCandidates) {
+          const origin = String((node as unknown as Record<string, unknown>)["_originName"] ?? node.name);
+          originCounts.set(origin, (originCounts.get(origin) ?? 0) + 1);
+        }
+        const deletedNodeKeys = new Set<string>();
+        for (const item of state.deletedNodes) {
+          const deletedNode = item?.node;
+          if (!deletedNode) continue;
+          const origin =
+            typeof item.originName === "string" && item.originName.trim()
+              ? item.originName.trim()
+              : String((deletedNode as unknown as Record<string, unknown>)["_originName"] ?? deletedNode.name).trim();
+          if (!origin) continue;
+          deletedNodeKeys.add(buildScopedNodeIdentityKey(origin, deletedNode));
+        }
+
+        const normalized = normalizedCandidates
+          .filter((node) => {
             const record = node as unknown as Record<string, unknown>;
             const origin =
               typeof record["_originName"] === "string" && record["_originName"].trim()
                 ? String(record["_originName"])
                 : node.name;
-            return origin === record["_originName"]
-              ? node
-              : ({ ...record, _originName: origin } as unknown as ParsedNode);
-          })
-          .filter((node) => {
-            const origin = String((node as unknown as Record<string, unknown>)["_originName"] ?? node.name);
+            if (deletedNodeKeys.has(buildScopedNodeIdentityKey(origin, node))) return false;
+            if ((originCounts.get(origin) ?? 0) > 1) return true;
             return !deleted.has(origin);
           });
 
@@ -598,7 +657,7 @@ export function createSourceActions(set: SetState, get: GetState, setAndGenerate
           if (typeof port !== "number" || !Number.isInteger(port)) continue;
           nextListenerPorts[name] = port;
         }
-        const nextDialerProxyGroups = filterDialerProxyGroupsByAvailableNames(state.dialerProxyGroups, availableNames);
+        const nextDialerProxyGroups = filterDialerProxyGroupsByAvailableNames(state.dialerProxyGroups, availableNames, state);
 
         return {
           nodes: normalized,
@@ -628,6 +687,7 @@ export function createSourceActions(set: SetState, get: GetState, setAndGenerate
           }),
         };
       });
+      importOperations.finishBatch(operation);
     },
   };
 }

@@ -144,7 +144,7 @@ proxies:
       type: "trojan",
     });
     expect(parseClashYaml("").errors).toEqual(["空的配置文件"]);
-    expect(parseClashYaml("proxies:\n  - name: Bad\n    type: ss\n    port: bad").errors[0]).toContain("缺少服务器地址");
+    expect(parseClashYaml("proxies:\n  - name: Bad\n    type: ss\n    port: bad").errors[0]).toContain("缺少有效服务器地址");
     expect(parseClashYaml("proxies: [").errors[0]).toContain("YAML 解析错误");
     expect(parseClashYaml("just text").errors[0]).toContain("无法识别为 Clash YAML");
   });
@@ -206,6 +206,94 @@ proxies:
     });
     expect(mixed.nodes.find((node) => node.name === "Mieru")).toMatchObject({ type: "mieru" });
     expect(mixed.errors[0]).toContain('节点 "Bad" 解析失败');
+  });
+
+  it("repairs large malformed proxy lists without quadratic scanning", () => {
+    const count = 2_000;
+    const rows = ["proxies:"];
+    for (let index = 0; index < count; index += 1) {
+      rows.push(`  - name: Node ${index}`);
+      rows.push("      type: ss");
+      rows.push(`      server: node-${index}.example.com`);
+      rows.push("      port: 8388");
+    }
+
+    const startedAt = performance.now();
+    const result = parseClashYaml(rows.join("\n"));
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(result.errors).toEqual([]);
+    expect(result.nodes).toHaveLength(count);
+    expect(elapsedMs).toBeLessThan(1_500);
+  }, 10_000);
+
+  it("parses consistently indented root flow proxy lists", () => {
+    for (const spaces of [0, 1, 2, 4]) {
+      const indent = " ".repeat(spaces);
+      const result = parseClashYaml([
+        "proxies:",
+        `${indent}- {name: A, type: vless, server: 2001:db8::1, port: 443, uuid: 11111111-1111-4111-8111-111111111111}`,
+        `${indent}- {name: B, type: vless, server: 2001:db8::2, port: 8443, uuid: 22222222-2222-4222-8222-222222222222}`,
+      ].join("\n"));
+
+      expect(result.errors).toEqual([]);
+      expect(result.nodes.map((node) => node.name)).toEqual(["A", "B"]);
+    }
+  });
+
+  it("repairs inconsistent root flow proxy list indentation", () => {
+    for (const secondIndent of [1, 4]) {
+      const result = parseClashYaml([
+        "proxies:",
+        "  - {name: A, type: vless, server: 2001:db8::1, port: 443, uuid: 11111111-1111-4111-8111-111111111111}",
+        `${" ".repeat(secondIndent)}- {name: B, type: vless, server: 2001:db8::2, port: 8443, uuid: 22222222-2222-4222-8222-222222222222, reality-opts: {public-key: test-key}}`,
+      ].join("\n"));
+
+      expect(result.errors).toEqual([]);
+      expect(result.nodes).toMatchObject([
+        { name: "A", server: "2001:db8::1", port: 443, type: "vless" },
+        {
+          name: "B",
+          server: "2001:db8::2",
+          port: 8443,
+          type: "vless",
+          "reality-opts": { "public-key": "test-key" },
+        },
+      ]);
+    }
+  });
+
+  it("does not repair nested, mixed, or unclosed flow proxy structures", () => {
+    const nested = parseClashYaml([
+      "proxy-groups:",
+      "  - name: Group",
+      "    type: select",
+      "    proxies:",
+      "      - {name: A, type: vless, server: example.com, port: 443}",
+      "       - {name: B, type: vless, server: example.net, port: 443}",
+    ].join("\n"));
+    const mixed = parseClashYaml([
+      "proxies:",
+      "  - {name: A, type: vless, server: example.com, port: 443}",
+      "    - name: B",
+      "      type: vless",
+      "      server: example.net",
+      "      port: 443",
+    ].join("\n"));
+    const unclosed = parseClashYaml("proxies:\n  - {name: A, type: vless, server: example.com, port: 443");
+
+    for (const result of [nested, mixed, unclosed]) {
+      expect(result.nodes).toEqual([]);
+      expect(result.errors[0]).toContain("YAML 解析错误");
+    }
+  });
+
+  it("keeps YAML backslash-underscore escape semantics in quoted names", () => {
+    const result = parseClashYaml(String.raw`proxies:
+  - {name: "x1.0\_50M", type: vless, server: example.com, port: 443}`);
+
+    expect(result.errors).toEqual([]);
+    expect(result.nodes[0]?.name).toBe("x1.0\u00a050M");
   });
 
   it("handles provider variants, array noise, and malformed proxy rows", () => {
@@ -310,5 +398,108 @@ proxies:
       "ws-opts": [],
     });
     expect(result.errors[0]).toContain('节点 "HY Ports Only" 解析失败');
+  });
+
+  it("covers non-mutating YAML normalization branches and protocol defaults", () => {
+    const result = parseClashYaml(`
+proxies:
+  - 1
+  - name: VMess TCP
+    type: vmess
+    server: vmess-tcp.example.com
+    port: 80
+  - name: VMess WS Empty
+    type: vmess
+    server: vmess-ws-empty.example.com
+    port: 443
+    network: ws
+  - name: VMess WS Plain
+    type: vmess
+    server: vmess-ws-plain.example.com
+    port: 443
+    network: ws
+    ws-opts:
+      path: /plain
+  - name: VLESS No Reality
+    type: vless
+    server: vless-none.example.com
+    port: 443
+  - name: VLESS Empty Reality
+    type: vless
+    server: vless-empty.example.com
+    port: 443
+    reality-opts:
+      short-id: "0x"
+  - name: VLESS Numeric Reality
+    type: vless
+    server: vless-numeric.example.com
+    port: 443
+    reality-opts:
+      public-key: 123
+      short-id: 7
+  - name: AnyTLS Default
+    type: anytls
+    server: anytls-default.example.com
+    port: 443
+  - name: HY2 Default
+    type: hysteria2
+    server: hy2-default.example.com
+    port: 443
+  - name: TUIC Default
+    type: tuic
+    server: tuic-default.example.com
+    port: 443
+  - name: Masque
+    type: masque
+    server: masque.example.com
+    port: 443
+  - name: Sudoku
+    type: sudoku
+    server: sudoku.example.com
+    port: 443
+  - name: Bad Unknown
+    type: ss
+    port: bad
+`);
+
+    expect(result.nodes.find((node) => node.name === "VMess TCP")).toMatchObject({
+      type: "vmess",
+      uuid: "",
+      network: undefined,
+    });
+    expect(result.nodes.find((node) => node.name === "VMess WS Empty")).toMatchObject({
+      type: "vmess",
+      network: "ws",
+    });
+    expect(result.nodes.find((node) => node.name === "VMess WS Plain")).toMatchObject({
+      "ws-opts": { path: "/plain" },
+    });
+    expect(result.nodes.find((node) => node.name === "VLESS No Reality")).toMatchObject({
+      type: "vless",
+      uuid: "",
+    });
+    expect(result.nodes.find((node) => node.name === "VLESS Empty Reality")?.["reality-opts"]).toBeUndefined();
+    expect(result.nodes.find((node) => node.name === "VLESS Numeric Reality")).toMatchObject({
+      "reality-opts": {
+        "public-key": 123,
+        "short-id": "07",
+      },
+    });
+    expect(result.nodes.find((node) => node.name === "AnyTLS Default")).toMatchObject({
+      type: "anytls",
+      password: "",
+    });
+    expect(result.nodes.find((node) => node.name === "HY2 Default")).toMatchObject({
+      type: "hysteria2",
+      password: "",
+    });
+    expect(result.nodes.find((node) => node.name === "TUIC Default")).toMatchObject({
+      type: "tuic",
+      uuid: "",
+      password: "",
+    });
+    expect(result.nodes.find((node) => node.name === "Masque")).toMatchObject({ type: "masque" });
+    expect(result.nodes.find((node) => node.name === "Sudoku")).toMatchObject({ type: "sudoku" });
+    expect(result.errors[0]).toContain('节点 "Bad Unknown" 解析失败');
   });
 });

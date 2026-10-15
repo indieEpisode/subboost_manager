@@ -114,17 +114,45 @@ vi.mock("@subboost/ui/components/ui/switch", () => ({
 }));
 vi.mock("@subboost/ui/components/ui/toaster", () => ({ toast: mocks.toast }));
 vi.mock("@subboost/core/generator/proxy-groups", () => ({
-  PROXY_GROUP_MODULES: [
-    { id: "auto", name: "Auto" },
-    { id: "fallback", name: "Fallback" },
-  ],
+	  PROXY_GROUP_MODULES: [
+	    { id: "auto", name: "Auto", rules: [] },
+	    { id: "fallback", name: "Fallback", rules: [] },
+	  ],
 }));
 vi.mock("@subboost/core/generator/module-rules", () => ({
+  getModuleRuleOrderKey: (moduleId: string, ruleId: string) =>
+    `${moduleId}:${ruleId}`,
   getEffectiveModuleRules: vi.fn(() => mocks.effectiveRules),
 }));
 vi.mock("@subboost/core/proxy-group-name", () => ({
   resolveProxyGroupModuleName: (module: { name: string }, override?: string) =>
     override || module.name,
+}));
+vi.mock("@subboost/core/proxy-group-targets", () => ({
+  resolveProxyGroupTargetName: (
+    target: unknown,
+    options: {
+      moduleNames?: Record<string, string>;
+      customProxyGroups?: Array<{ id: string; name: string }>;
+      fallbackTarget?: string;
+    } = {},
+  ) => {
+    if (typeof target === "string") return target;
+    if (target && typeof target === "object") {
+      const entry = target as { kind?: string; id?: string };
+      if (entry.kind === "module" && entry.id) {
+        return options.moduleNames?.[entry.id] ?? options.fallbackTarget ?? entry.id;
+      }
+      if (entry.kind === "custom" && entry.id) {
+        return (
+          options.customProxyGroups?.find((group) => group.id === entry.id)?.name ??
+          options.fallbackTarget ??
+          entry.id
+        );
+      }
+    }
+    return options.fallbackTarget ?? "";
+  },
 }));
 vi.mock("@subboost/core/rules/custom-routing-rule-sets", () => ({
   buildRuleSetUrlFromPath: (path: string, base: string) =>
@@ -144,32 +172,34 @@ vi.mock("@subboost/ui/store/config-store", () => {
 });
 
 import { ProxyGroupsAddedRuleSets } from "./proxy-groups-added-rule-sets";
+import { PROXY_GROUP_MODULES } from "@subboost/core/generator/proxy-groups";
 import {
   RULE_EDIT_ACTIONS_CLASS,
   RULE_EDIT_PRIMARY_FIELD_CLASS,
   RULE_EDIT_TARGET_SELECT_TRIGGER_CLASS,
   RULE_EDIT_TRAILING_CONTROLS_CLASS,
   RULE_TARGET_SELECT_TRIGGER_CLASS,
+  RULE_TYPE_BADGE_CLASS,
 } from "./proxy-groups-rule-editor-layout";
 
 const moduleItem = {
-  key: "module:auto:rule-a",
+  key: "custom-rule-set:rule-a",
   id: "rule-a",
   name: "Rule A",
   behavior: "domain",
   path: "geosite/rule-a.mrs",
   noResolve: true,
-  source: { kind: "module", id: "auto" },
+  source: { kind: "custom-rule-set", id: "rule-a" },
   target: { kind: "module", id: "auto", value: "module:auto", name: "Auto" },
 };
 
 const customItem = {
-  key: "custom:custom-1:rule-b",
+  key: "custom-rule-set:rule-b",
   id: "rule-b",
   name: "Rule B",
   behavior: "ipcidr",
   path: "geoip/rule-b.mrs",
-  source: { kind: "custom", id: "custom-1" },
+  source: { kind: "custom-rule-set", id: "rule-b" },
   target: {
     kind: "custom",
     id: "custom-1",
@@ -223,27 +253,25 @@ describe("ProxyGroupsAddedRuleSets", () => {
       switches: [],
     };
     mocks.ruleSets = [moduleItem, customItem];
+    for (const proxyModule of PROXY_GROUP_MODULES as Array<{ rules?: unknown[] }>) {
+      proxyModule.rules = [];
+    }
     mocks.effectiveRules = [];
     mocks.store = {
       ruleProviderBaseUrl: "https://rules.example/",
       enabledProxyGroups: ["auto"],
       hiddenProxyGroups: [],
-      moduleRuleOverrides: {},
-      moduleRuleExclusions: {},
+      customRuleSets: [
+        { id: "rule-a", name: "Rule A", behavior: "domain", path: "geosite/rule-a.mrs", target: "Auto", noResolve: true },
+        { id: "rule-b", name: "Rule B", behavior: "ipcidr", path: "geoip/rule-b.mrs", target: "Custom" },
+      ],
+      builtinRuleEdits: {},
       customProxyGroups: [
         {
           id: "custom-1",
           name: "Custom",
-          rules: [
-            {
-              id: "rule-b",
-              name: "Rule B",
-              behavior: "ipcidr",
-              url: "https://rules.example/geoip/rule-b.mrs",
-            },
-          ],
         },
-        { id: "custom-2", name: "Target", rules: [] },
+        { id: "custom-2", name: "Target" },
       ],
       proxyGroupNameOverrides: { auto: "Auto" },
       toggleProxyGroup: vi.fn(),
@@ -259,6 +287,7 @@ describe("ProxyGroupsAddedRuleSets", () => {
     const { html } = renderAdded();
 
     expect(html).toContain("RULE-SET");
+    expect(html).toContain(RULE_TYPE_BADGE_CLASS);
     expect(html).toContain("geosite/rule-a");
     expect(html).toContain("geoip/rule-b");
     expect(html).toContain("Auto");
@@ -291,10 +320,12 @@ describe("ProxyGroupsAddedRuleSets", () => {
     });
 
     expect(html).toContain("geosite/draft");
+    expect(html).toContain("Target");
     expect(html).not.toContain("geosite/draft.mrs");
     expect(html).toContain(RULE_EDIT_PRIMARY_FIELD_CLASS);
     expect(html).toContain(RULE_EDIT_TRAILING_CONTROLS_CLASS);
     expect(html).toContain(RULE_EDIT_ACTIONS_CLASS);
+    expect(html).toContain("proxy-group-rule-no-resolve-label");
     expect(mocks.captures.inputs).toHaveLength(0);
     expect(mocks.captures.selects).toHaveLength(1);
     expect(RULE_TARGET_SELECT_TRIGGER_CLASS).toContain("w-[120px]");
@@ -315,6 +346,53 @@ describe("ProxyGroupsAddedRuleSets", () => {
           typeof value === "function",
       );
     expect(draftUpdaters.map((updater) => updater(null))).toEqual([null, null]);
+  });
+
+  it("compacts MetaCubeX paths, preserves third-party URLs, and hides rows targeting hidden modules", () => {
+    mocks.ruleSets = [
+      {
+        ...moduleItem,
+        key: "custom-rule-set:metacubex",
+        id: "metacubex",
+        path: "https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/scholar.mrs",
+        noResolve: false,
+      },
+      {
+        ...moduleItem,
+        key: "custom-rule-set:metacubex-geoip",
+        id: "metacubex-geoip",
+        path: "https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geoip/private.mrs",
+        noResolve: true,
+      },
+      {
+        ...moduleItem,
+        key: "custom-rule-set:third-party",
+        id: "third-party",
+        path: "https://cdn.example/geosite/plain-rule.mrs",
+        noResolve: false,
+      },
+      {
+        ...moduleItem,
+        key: "custom-rule-set:hidden",
+        id: "hidden",
+        path: "geosite/hidden.mrs",
+        target: {
+          kind: "module",
+          id: "fallback",
+          value: "module:fallback",
+          name: "Fallback",
+        },
+      },
+    ];
+    mocks.store.hiddenProxyGroups = ["fallback"];
+
+    const { html } = renderAdded();
+
+    expect(html).toContain("geosite/scholar");
+    expect(html).toContain("geoip/private");
+    expect(html).not.toContain("https://github.com/MetaCubeX/meta-rules-dat");
+    expect(html).toContain("https://cdn.example/geosite/plain-rule.mrs");
+    expect(html).not.toContain("geosite/hidden");
   });
 
   it("saves module rule edits across module and custom targets", () => {
@@ -382,19 +460,12 @@ describe("ProxyGroupsAddedRuleSets", () => {
       kind: "custom",
       id: "custom-2",
     });
-    expect(mocks.store.updateCustomProxyGroup).toHaveBeenCalledWith(
-      "custom-2",
-      {
-        rules: [
-          {
-            id: "rule-a",
-            name: "Rule A",
-            behavior: "domain",
-            url: "https://rules.example/geosite/rule-a.mrs",
-          },
-        ],
-      },
-    );
+    expect(mocks.store.updateModuleRule).toHaveBeenCalledWith("custom-2", "rule-a", {
+      id: "rule-a",
+      name: "Rule A",
+      behavior: "domain",
+      path: "geosite/rule-a.mrs",
+    });
   });
 
   it("saves custom rule edits and enables target modules when needed", () => {
@@ -409,23 +480,16 @@ describe("ProxyGroupsAddedRuleSets", () => {
     mocks.captures.buttons
       .find((props: any) => props.title === "保存规则集")
       .onClick();
-    expect(mocks.store.updateCustomProxyGroup).toHaveBeenCalledWith(
-      "custom-1",
-      { rules: [] },
-    );
-    expect(mocks.store.updateCustomProxyGroup).toHaveBeenCalledWith(
-      "custom-2",
-      {
-        rules: [
-          {
-            id: "rule-b",
-            name: "Rule B",
-            behavior: "ipcidr",
-            url: "https://rules.example/geoip/rule-b.mrs",
-          },
-        ],
-      },
-    );
+    expect(mocks.store.moveModuleRule).toHaveBeenCalledWith("custom-1", "rule-b", {
+      kind: "custom",
+      id: "custom-2",
+    });
+    expect(mocks.store.updateModuleRule).toHaveBeenCalledWith("custom-2", "rule-b", {
+      id: "rule-b",
+      name: "Rule B",
+      behavior: "ipcidr",
+      path: "geoip/rule-b.mrs",
+    });
 
     mocks.store.enabledProxyGroups = [];
     renderAdded({
@@ -440,14 +504,16 @@ describe("ProxyGroupsAddedRuleSets", () => {
       .find((props: any) => props.title === "保存规则集")
       .onClick();
     expect(mocks.store.toggleProxyGroup).toHaveBeenCalledWith("fallback");
-    expect(mocks.store.addModuleRules).toHaveBeenCalledWith("fallback", [
-      {
-        id: "rule-b",
-        name: "Rule B",
-        behavior: "ipcidr",
-        path: "geoip/rule-b.mrs",
-      },
-    ]);
+    expect(mocks.store.moveModuleRule).toHaveBeenCalledWith("custom-1", "rule-b", {
+      kind: "module",
+      id: "fallback",
+    });
+    expect(mocks.store.updateModuleRule).toHaveBeenCalledWith("fallback", "rule-b", {
+      id: "rule-b",
+      name: "Rule B",
+      behavior: "ipcidr",
+      path: "geoip/rule-b.mrs",
+    });
 
     renderAdded({
       0: customItem.key,
@@ -460,24 +526,20 @@ describe("ProxyGroupsAddedRuleSets", () => {
     mocks.captures.buttons
       .find((props: any) => props.title === "保存规则集")
       .onClick();
-    expect(mocks.store.updateCustomProxyGroup).toHaveBeenCalledWith(
-      "custom-1",
-      {
-        rules: [
-          {
-            id: "rule-b",
-            name: "Rule B",
-            behavior: "ipcidr",
-            url: "https://rules.example/geoip/rule-b.mrs",
-            noResolve: true,
-          },
-        ],
-      },
-    );
+    expect(mocks.store.updateModuleRule).toHaveBeenCalledWith("custom-1", "rule-b", {
+      id: "rule-b",
+      name: "Rule B",
+      behavior: "ipcidr",
+      path: "geoip/rule-b.mrs",
+      noResolve: true,
+    });
   });
 
   it("rejects conflicts, removes items, and cancels editing", () => {
-    mocks.effectiveRules = [{ id: "rule-a" }];
+    mocks.store.customRuleSets = [
+      ...mocks.store.customRuleSets,
+      { id: "rule-a", name: "Rule A", behavior: "domain", path: "geosite/rule-a.mrs", target: "Fallback" },
+    ];
     renderAdded({
       0: moduleItem.key,
       1: {
@@ -519,9 +581,87 @@ describe("ProxyGroupsAddedRuleSets", () => {
       .onClick();
     expect(stateMock.setters[0]).toHaveBeenCalledWith(null);
     findEditingDeleteButton().onClick();
-    expect(mocks.store.updateCustomProxyGroup).toHaveBeenCalledWith(
-      "custom-1",
-      { rules: [] },
+    expect(mocks.store.removeModuleRule).toHaveBeenCalledWith("custom-1", "rule-b");
+  });
+
+  it("rejects builtin and blank custom target conflicts", () => {
+    (PROXY_GROUP_MODULES[1] as any).rules = [
+      { id: "other-rule" },
+      { id: "rule-a" },
+    ];
+    renderAdded({
+      0: moduleItem.key,
+      1: {
+        path: "geosite/rule-a.mrs",
+        targetValue: "module:fallback",
+        noResolve: false,
+      },
+    });
+    mocks.captures.buttons
+      .find((props: any) => props.title === "保存规则集")
+      .onClick();
+    expect(mocks.toast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "规则集已存在", variant: "warning" }),
+    );
+
+    mocks.toast.mockClear();
+    mocks.store.builtinRuleEdits = {
+      "fallback:rule-a": { enabled: false },
+    };
+    renderAdded({
+      0: moduleItem.key,
+      1: {
+        path: "geosite/rule-a.mrs",
+        targetValue: "module:fallback",
+        noResolve: false,
+      },
+    });
+    mocks.captures.buttons
+      .find((props: any) => props.title === "保存规则集")
+      .onClick();
+    expect(mocks.toast).not.toHaveBeenCalled();
+    expect(mocks.store.moveModuleRule).toHaveBeenCalledWith("auto", "rule-a", {
+      kind: "module",
+      id: "fallback",
+    });
+
+    mocks.store.moveModuleRule.mockClear();
+    mocks.store.builtinRuleEdits = {
+      "fallback:rule-a": { target: { kind: "custom", id: "custom-2" } },
+    };
+    renderAdded({
+      0: moduleItem.key,
+      1: {
+        path: "geosite/rule-a.mrs",
+        targetValue: "module:fallback",
+        noResolve: false,
+      },
+    });
+    mocks.captures.buttons
+      .find((props: any) => props.title === "保存规则集")
+      .onClick();
+    expect(mocks.store.moveModuleRule).toHaveBeenCalledWith("auto", "rule-a", {
+      kind: "module",
+      id: "fallback",
+    });
+
+    mocks.store.customProxyGroups = [
+      { id: "custom-1", name: "Custom" },
+      { id: "blank", name: "   " },
+    ];
+    renderAdded({
+      0: customItem.key,
+      1: {
+        path: "geoip/rule-b.mrs",
+        targetValue: "custom:blank",
+        noResolve: false,
+      },
+    });
+    mocks.captures.buttons
+      .find((props: any) => props.title === "保存规则集")
+      .onClick();
+    expect(mocks.toast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "规则集已存在", variant: "warning" }),
     );
   });
 
@@ -552,44 +692,4 @@ describe("ProxyGroupsAddedRuleSets", () => {
     expect(stateMock.setters[1]).toHaveBeenCalledWith(null);
   });
 
-  it("ignores invalid saves and reports missing targets as conflicts", () => {
-    renderAdded({
-      0: moduleItem.key,
-      1: { path: "geosite/rule-a.mrs", targetValue: "bad", noResolve: false },
-    });
-    mocks.captures.buttons
-      .find((props: any) => props.title === "保存规则集")
-      .onClick();
-    expect(mocks.store.updateModuleRule).not.toHaveBeenCalled();
-
-    renderAdded({
-      0: moduleItem.key,
-      1: {
-        path: "geosite/rule-a.mrs",
-        targetValue: "module:missing",
-        noResolve: false,
-      },
-    });
-    mocks.captures.buttons
-      .find((props: any) => props.title === "保存规则集")
-      .onClick();
-    expect(mocks.toast).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "规则集已存在", variant: "warning" }),
-    );
-
-    renderAdded({
-      0: customItem.key,
-      1: {
-        path: "geoip/rule-b.mrs",
-        targetValue: "custom:missing",
-        noResolve: false,
-      },
-    });
-    mocks.captures.buttons
-      .find((props: any) => props.title === "保存规则集")
-      .onClick();
-    expect(mocks.toast).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "规则集已存在", variant: "warning" }),
-    );
-  });
 });

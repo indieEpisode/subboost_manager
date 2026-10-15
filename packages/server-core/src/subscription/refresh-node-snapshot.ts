@@ -6,6 +6,7 @@ import {
 } from "@subboost/core/subscription/node-source-state";
 import {
   detachSourceNodesFromState,
+  type DeletedNodeDescriptor,
   mergeParsedSourceNodes,
   prepareSourceParsedNodes,
 } from "@subboost/core/subscription/source-node-refresh";
@@ -23,6 +24,7 @@ import {
 } from "@subboost/core/subscription/subscription-response-info";
 import type { SubscriptionImportErrorCategory } from "@subboost/core/subscription/import-error";
 import type { ParsedNode } from "@subboost/core/types/node";
+import { composeNodeNameRenameMaps } from "@subboost/core/subscription/node-name-references";
 import { normalizeSavedSourcesForPersistence, type SavedSource, type SavedSourceType } from "./saved-sources";
 
 type UrlNodeFetchResult = {
@@ -61,6 +63,7 @@ export type RefreshNodeSnapshotOptions = {
 
 export type RefreshNodeSnapshotResult = {
   nodes: ParsedNode[];
+  renameMap?: ReadonlyMap<string, string>;
   subscriptionInfo: SubscriptionResponseInfo;
   savedSources: SavedSource[];
   attemptedUrlFetch: boolean;
@@ -80,6 +83,13 @@ function getDeletedNodeNames(config: Record<string, unknown>): string[] {
     .filter((item): item is string => typeof item === "string")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function getDeletedNodes(config: Record<string, unknown>): DeletedNodeDescriptor[] {
+  if (!Array.isArray(config.deletedNodes)) return [];
+  return (config.deletedNodes as unknown[]).filter(
+    (item): item is DeletedNodeDescriptor => Boolean(item) && typeof item === "object" && !Array.isArray(item)
+  );
 }
 
 export function resolveSmartNodeMatchingEnabled(config: Record<string, unknown>): boolean {
@@ -112,6 +122,7 @@ export async function refreshNodeSnapshot(
   let refreshedSavedSources = savedSources.map((source) => ({ ...source }));
   const validSourceIds = new Set(savedSources.map((source) => source.id));
   const deletedNodeNames = getDeletedNodeNames(options.config);
+  const deletedNodes = getDeletedNodes(options.config);
   const smartNodeMatchingEnabled = resolveSmartNodeMatchingEnabled(options.config);
 
   let currentNodes = options.storedNodes
@@ -132,6 +143,7 @@ export async function refreshNodeSnapshot(
   let detachedSourceCount = 0;
   let failedSourceCount = 0;
   const failedSources: RefreshNodeSnapshotFailedSource[] = [];
+  let renameMap = new Map<string, string>();
 
   const recordFailedSource = (
     source: SavedSource,
@@ -267,8 +279,10 @@ export async function refreshNodeSnapshot(
             source.lastParsedContent.trim() !== source.content.trim()
         ),
         smartNodeMatchingEnabled,
+        deletedNodes,
       });
 
+      renameMap = composeNodeNameRenameMaps(renameMap, merged.renameMap);
       currentNodes = merged.nodes;
       usedUrlFetch = true;
       refreshedSourceCount += 1;
@@ -300,8 +314,10 @@ export async function refreshNodeSnapshot(
         lastNameTemplate: source.lastParsedNameTemplate,
         treatAsNewSource: false,
         smartNodeMatchingEnabled,
+        deletedNodes,
       });
 
+      renameMap = composeNodeNameRenameMaps(renameMap, merged.renameMap);
       currentNodes = merged.nodes;
       refreshedSourceCount += 1;
       refreshedStaticSourceCount += 1;
@@ -343,6 +359,7 @@ export async function refreshNodeSnapshot(
 
   return {
     nodes: currentNodes,
+    renameMap,
     subscriptionInfo,
     savedSources: refreshedSavedSources,
     attemptedUrlFetch,

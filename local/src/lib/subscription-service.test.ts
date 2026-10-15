@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => ({
       findFirst: vi.fn(),
       findUnique: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
       delete: vi.fn(),
       count: vi.fn(),
     },
@@ -147,6 +148,10 @@ function row(overrides: Partial<SubscriptionRow> = {}): SubscriptionRow {
       failureSourceState: null,
       lastFailedAt: new Date("2026-06-01T05:00:00.000Z"),
       lastAttemptedAt: new Date("2026-06-01T06:00:00.000Z"),
+      nodeQuotaFailureCount: 2,
+      lastNodeQuotaExceededAt: new Date("2026-06-01T06:30:00.000Z"),
+      lastNodeQuotaActual: 120,
+      lastNodeQuotaLimit: 100,
       disabledAt: null,
       disabledReason: null,
       disabledPreviousInterval: null,
@@ -159,7 +164,11 @@ describe("local subscription service", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getAppUrl.mockReturnValue("http://127.0.0.1:3001");
-    mocks.prepareRefreshCacheResult.mockReturnValue({ ok: true, nodeCount: 1 });
+    mocks.prepareRefreshCacheResult.mockReturnValue({
+      ok: true,
+      nodeCount: 1,
+      refreshedConfig: { sources: [{ id: "source-1", type: "url", content: "https://example.com/sub" }] },
+    });
     mocks.refreshNodeSnapshot.mockResolvedValue({
       nodes: [node("Fresh")],
       savedSources: [{ id: "source-1", type: "url", content: "https://example.com/sub" }],
@@ -175,7 +184,13 @@ describe("local subscription service", () => {
     mocks.prisma.subscription.create.mockResolvedValue(row({ name: "Created" }));
     mocks.prisma.subscription.findFirst.mockResolvedValue(row());
     mocks.prisma.subscription.findUnique.mockResolvedValue(row());
-    mocks.prisma.subscription.update.mockResolvedValue(row({ name: "Updated" }));
+    mocks.prisma.subscription.update.mockImplementation(async ({ data }) => {
+      const current = mocks.prisma.subscription.findUnique.mock.settledResults.at(-1)?.value
+        ?? mocks.prisma.subscription.findFirst.mock.settledResults.at(-1)?.value;
+      return row({ ...current, ...data });
+    });
+    mocks.prisma.subscription.updateMany.mockResolvedValue({ count: 1 });
+    mocks.prisma.subscriptionAutoUpdateState.upsert.mockResolvedValue({});
     mocks.prisma.subscription.delete.mockResolvedValue(row());
     mocks.prisma.subscription.count.mockResolvedValue(0);
     mocks.prisma.localAdmin.findUnique.mockResolvedValue({ maxSubscriptions: null });
@@ -207,6 +222,10 @@ describe("local subscription service", () => {
         externalFailureCount: 2,
         lastFailedAt: "2026-06-01T05:00:00.000Z",
         lastAttemptedAt: "2026-06-01T06:00:00.000Z",
+        nodeQuotaFailureCount: 2,
+        lastNodeQuotaExceededAt: "2026-06-01T06:30:00.000Z",
+        lastNodeQuotaActual: 120,
+        lastNodeQuotaLimit: 100,
       },
     });
 
@@ -243,6 +262,10 @@ describe("local subscription service", () => {
         externalFailureCount: 0,
         lastFailedAt: null,
         lastAttemptedAt: null,
+        nodeQuotaFailureCount: 0,
+        lastNodeQuotaExceededAt: null,
+        lastNodeQuotaActual: null,
+        lastNodeQuotaLimit: null,
         disabledAt: null,
         disabledReason: null,
         disabledPreviousInterval: null,
@@ -298,6 +321,7 @@ describe("local subscription service", () => {
       data: expect.objectContaining({
         ownerId: "owner-1",
         name: "Created",
+        token: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
         encryptedUrls: JSON.stringify(["https://example.com/sub"]),
         encryptedNodes: expect.stringContaining('"name":"Node"'),
         encryptedConfig: expect.stringContaining('"smartNodeMatchingEnabled":false'),
@@ -346,6 +370,58 @@ describe("local subscription service", () => {
         autoUpdateInterval: 359,
       })
     ).rejects.toThrow("自动更新最小间隔为 0.1 小时");
+
+    await expect(createSubscription("owner-1", { name: "Bad", nodes: [null] })).rejects.toThrow(
+      "节点 #1 必须是对象"
+    );
+    await expect(
+      createSubscription("owner-1", { name: "Too many", nodes: Array.from({ length: 10_001 }, () => null) })
+    ).rejects.toThrow("Node count cannot exceed 10000");
+  });
+
+  it("validates node filters and permits provider-only output on create", async () => {
+    await expect(
+      createSubscription("owner-1", {
+        name: "Invalid filter",
+        nodes: [node("套餐到期提醒")],
+        config: {
+          nodeNameFilter: { enabled: true, excludeRegexes: ["("] },
+        },
+      })
+    ).rejects.toThrow("节点名称过滤配置无效");
+
+    mocks.buildGenerateOptionsFromConfig.mockReturnValueOnce({ nodes: [] });
+    await expect(
+      createSubscription("owner-1", {
+        name: "Empty filter result",
+        nodes: [node("套餐到期提醒")],
+        config: {
+          nodeNameFilter: { enabled: true, excludeRegexes: ["套餐到期"] },
+        },
+      })
+    ).rejects.toThrow("过滤后没有可用节点");
+
+    mocks.buildGenerateOptionsFromConfig.mockReturnValueOnce({
+      nodes: [],
+      proxyProviders: { provider: { type: "http" } },
+    });
+    await expect(
+      createSubscription("owner-1", {
+        name: "Provider output",
+        nodes: [node("套餐到期提醒")],
+        config: {
+          sources: [
+            {
+              id: "provider",
+              type: "url",
+              content: "https://provider.example/sub",
+              useProxyProviders: true,
+            },
+          ],
+          nodeNameFilter: { enabled: true, excludeRegexes: ["套餐到期"] },
+        },
+      })
+    ).resolves.toMatchObject({ name: "Created" });
   });
 
   it("updates subscriptions and preserves existing values when fields are omitted", async () => {
@@ -398,6 +474,64 @@ describe("local subscription service", () => {
       }),
       include: { autoUpdateState: true },
     });
+
+    mocks.prisma.subscription.findFirst.mockResolvedValueOnce(row({ autoUpdateInterval: null }));
+    await updateSubscription("owner-1", "sub-1", { autoUpdateInterval: 7200 });
+    expect(mocks.prisma.subscriptionAutoUpdateState.upsert).toHaveBeenCalledWith({
+      where: { subscriptionId: "sub-1" },
+      create: { subscriptionId: "sub-1" },
+      update: {
+        externalFailureCount: 0,
+        failureSourceState: null,
+        lastFailedAt: null,
+        lastAttemptedAt: null,
+        nodeQuotaFailureCount: 0,
+        lastNodeQuotaExceededAt: null,
+        lastNodeQuotaActual: null,
+        lastNodeQuotaLimit: null,
+        disabledAt: null,
+        disabledReason: null,
+        disabledPreviousInterval: null,
+      },
+    });
+  });
+
+  it("rejects updates whose filter removes every ordinary node", async () => {
+    mocks.buildGenerateOptionsFromConfig.mockReturnValueOnce({ nodes: [] });
+
+    await expect(
+      updateSubscription("owner-1", "sub-1", {
+        nodes: [node("套餐到期提醒")],
+        config: {
+          nodeNameFilter: { enabled: true, excludeRegexes: ["套餐到期"] },
+        },
+      })
+    ).rejects.toThrow("过滤后没有可用节点");
+    expect(mocks.prisma.subscription.update).not.toHaveBeenCalled();
+  });
+
+  it("replaces submitted config instead of retaining omitted stale fields", async () => {
+    mocks.prisma.subscription.findFirst.mockResolvedValueOnce(
+      row({
+        encryptedConfig: JSON.stringify({
+          staleSetting: true,
+          sources: [{ id: "old", type: "url", content: "https://old.example/sub" }],
+        }),
+      })
+    );
+
+    await updateSubscription("owner-1", "sub-1", {
+      config: {
+        freshSetting: true,
+        sources: [{ id: "new", type: "url", content: "https://new.example/sub" }],
+      },
+    });
+
+    const update = mocks.prisma.subscription.update.mock.calls.at(-1)?.[0];
+    const encryptedConfig = update?.data?.encryptedConfig;
+    expect(typeof encryptedConfig).toBe("string");
+    expect(JSON.parse(encryptedConfig)).toMatchObject({ freshSetting: true });
+    expect(JSON.parse(encryptedConfig)).not.toHaveProperty("staleSetting");
   });
 
   it("builds fetch callbacks for refresh source imports", async () => {
@@ -463,6 +597,28 @@ describe("local subscription service", () => {
       body: { ok: true, nodeCount: 1 },
     });
     expect(mocks.prisma.$transaction).toHaveBeenCalled();
+    expect(mocks.prisma.subscriptionAutoUpdateState.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          nodeQuotaFailureCount: 0,
+          lastNodeQuotaExceededAt: null,
+          lastNodeQuotaActual: null,
+          lastNodeQuotaLimit: null,
+        }),
+      })
+    );
+
+    mocks.prisma.subscription.updateMany.mockResolvedValueOnce({ count: 0 });
+    await expect(refreshSubscription("owner-1", "sub-1")).resolves.toEqual({
+      ok: false,
+      response: {
+        body: {
+          error: "Subscription changed while refresh was in progress.",
+          code: "SUBSCRIPTION_CHANGED",
+        },
+        status: 409,
+      },
+    });
 
     mocks.prepareRefreshCacheResult.mockReturnValueOnce({ ok: false, reason: "too_many_nodes" });
     await expect(refreshSubscription("owner-1", "sub-1")).resolves.toEqual({
@@ -472,6 +628,87 @@ describe("local subscription service", () => {
 
     mocks.prisma.subscription.findFirst.mockResolvedValueOnce(null);
     await expect(refreshSubscription("owner-1", "missing")).resolves.toBeNull();
+  });
+
+  it("keeps per-account subscription quotas enforced", async () => {
+    mocks.prisma.localAdmin.findUnique.mockResolvedValueOnce({ maxSubscriptions: 1 });
+    mocks.prisma.subscription.count.mockResolvedValueOnce(1);
+    await expect(createSubscription("owner-1", { name: "Extra", nodes: [node()] })).rejects.toThrow("订阅数量上限（1）");
+    expect(mocks.prisma.subscription.count).toHaveBeenCalledWith({ where: { ownerId: "owner-1" } });
+    expect(mocks.prisma.subscription.create).not.toHaveBeenCalled();
+  });
+
+  it("retains database-backed per-owner pull limits before generating or refreshing", async () => {
+    mocks.prisma.subscription.findUnique.mockResolvedValueOnce({
+      ...row(), pullWindowStartedAt: new Date(), pullCountInWindow: 2,
+      owner: { pullRateLimitMax: 2, pullRateWindowSeconds: 600, pullCooldownSeconds: 86400 },
+    });
+    await expect(generateSubscriptionYaml("token-1")).resolves.toMatchObject({ status: "throttled", retryAfterSeconds: 86400 });
+    expect(mocks.prisma.subscription.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ pullThrottledUntil: expect.any(Date), pullThrottleTrippedAt: expect.any(Date) }),
+    }));
+    expect(mocks.refreshNodeSnapshot).not.toHaveBeenCalled();
+    expect(mocks.generateClashYaml).not.toHaveBeenCalled();
+  });
+
+  it("retains the independent manual-refresh cooldown", async () => {
+    mocks.prisma.subscription.findFirst.mockResolvedValueOnce({
+      ...row(), refreshWindowStartedAt: new Date(), refreshCountInWindow: 10,
+    });
+    await expect(refreshSubscription("owner-1", "sub-1")).resolves.toMatchObject({ ok: false, throttled: true, retryAfterSeconds: 3600 });
+    expect(mocks.refreshNodeSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("uses the post-rate-limit revision for manual refresh concurrency checks", async () => {
+    const gatedAt = new Date("2026-10-15T01:00:00Z");
+    mocks.prisma.subscription.update.mockResolvedValueOnce(row({ updatedAt: gatedAt }));
+    await expect(refreshSubscription("owner-1", "sub-1")).resolves.toMatchObject({ ok: true });
+    expect(mocks.prisma.subscription.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "sub-1", updatedAt: gatedAt },
+    }));
+  });
+
+  it("preserves force-refresh-on-fetch and persists the upstream-repaired config", async () => {
+    const gatedAt = new Date("2026-10-15T01:00:00Z");
+    mocks.prisma.localSetting.findUnique.mockResolvedValue({ forceRefreshOnFetch: true, forceRefreshMinIntervalSeconds: 600 });
+    mocks.prisma.subscription.update.mockResolvedValueOnce(row({ updatedAt: gatedAt }));
+    mocks.prepareRefreshCacheResult.mockReturnValueOnce({ ok: true, nodeCount: 1, refreshedConfig: { repairedReference: "Fresh" } });
+    mocks.prisma.subscription.findUnique.mockResolvedValueOnce(row()).mockResolvedValueOnce(row({
+      encryptedNodes: JSON.stringify([node("Fresh")]), encryptedConfig: JSON.stringify({ repairedReference: "Fresh" }),
+    }));
+    await expect(generateSubscriptionYaml("token-1")).resolves.toMatchObject({ status: "ok" });
+    expect(mocks.prisma.subscription.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "sub-1", updatedAt: gatedAt },
+      data: expect.objectContaining({ encryptedConfig: JSON.stringify({ repairedReference: "Fresh" }) }),
+    }));
+    expect(mocks.buildGenerateOptionsFromConfig).toHaveBeenCalledWith({ repairedReference: "Fresh" }, expect.objectContaining({ nodes: [node("Fresh")] }));
+  });
+
+  it("does not refresh a snapshot inside the configured minimum interval", async () => {
+    mocks.prisma.localSetting.findUnique.mockResolvedValueOnce({ forceRefreshOnFetch: true, forceRefreshMinIntervalSeconds: 600 });
+    mocks.prisma.subscription.findUnique.mockResolvedValueOnce(row({ lastUpdatedAt: new Date() }));
+    await expect(generateSubscriptionYaml("token-1")).resolves.toMatchObject({ status: "ok" });
+    expect(mocks.refreshNodeSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("never serves the old snapshot when a required refresh fails or conflicts with an edit", async () => {
+    mocks.prisma.localSetting.findUnique.mockResolvedValue({ forceRefreshOnFetch: true, forceRefreshMinIntervalSeconds: 600 });
+    mocks.prepareRefreshCacheResult.mockReturnValueOnce({ ok: false, reason: "all_sources_failed" });
+    await expect(generateSubscriptionYaml("token-1")).resolves.toMatchObject({ status: "refresh_failed" });
+    expect(mocks.generateClashYaml).not.toHaveBeenCalled();
+
+    mocks.prisma.subscription.updateMany.mockResolvedValueOnce({ count: 0 });
+    await expect(generateSubscriptionYaml("token-1")).resolves.toMatchObject({ status: "refresh_failed", message: expect.stringContaining("被修改") });
+    expect(mocks.generateClashYaml).not.toHaveBeenCalled();
+  });
+
+  it("passes the subscription owner through node and userinfo imports", async () => {
+    const callbacks = buildSubscriptionFetchCallbacks("owner-2");
+    const source = { id: "source", type: "url", content: "https://example.com/sub" } as any;
+    await callbacks.fetchUrlNodes(source);
+    expect(mocks.importSourceUrlDirect).toHaveBeenCalledWith({ url: source.content }, "owner-2");
+    await callbacks.fetchUrlUserInfo(source);
+    expect(mocks.fetchSourceUserInfoHeadersDirect).toHaveBeenCalledWith(source, "owner-2");
   });
 
   it("generates YAML and updates access time when a subscription has nodes or proxy providers", async () => {

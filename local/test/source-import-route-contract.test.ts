@@ -47,7 +47,7 @@ describe("local source import route", () => {
       url: "https://example.com/sub.yaml",
       userinfoUrl: "https://example.com/userinfo",
       userinfoUserAgent: "mihomo/1.19.24",
-    });
+    }, "admin-1");
     await expect(response.json()).resolves.toMatchObject({
       content: "proxies: []",
       headers: { "subscription-userinfo": "total=3" },
@@ -80,6 +80,19 @@ describe("local source import route", () => {
     expect(importSourceUrlDirect).not.toHaveBeenCalled();
   });
 
+  it("rejects source import bodies above 64 KiB", async () => {
+    const response = await route.POST(new Request("http://local.test/api/source-import", {
+      method: "POST",
+      headers: { "content-length": String(64 * 1024 + 1) },
+      body: "{}",
+    }));
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toEqual({
+      error: "Request body is too large.",
+      code: "PAYLOAD_TOO_LARGE",
+    });
+  });
+
   it("normalizes optional userinfo fields and forwards import errors", async () => {
     let response = await route.POST(jsonRequest({
       url: " https://example.com/sub.yaml ",
@@ -92,7 +105,7 @@ describe("local source import route", () => {
       url: "https://example.com/sub.yaml",
       userinfoUrl: undefined,
       userinfoUserAgent: undefined,
-    });
+    }, "admin-1");
 
     vi.mocked(importSourceUrlDirect).mockResolvedValueOnce({
       ok: false,

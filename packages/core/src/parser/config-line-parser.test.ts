@@ -1,65 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { looksLikeConfigLine } from "./config-line-parser";
 import { mustParseConfigLine } from "./config-line-parser.test-helpers";
-import {
-  inferSkipCertVerify,
-  isUuidLike,
-  parseBooleanish,
-  parseIntParam,
-  parseStringList,
-  parseWsHeaders,
-  tokenizeConfigLine,
-} from "./config-line-tokenizer";
-
-describe("config line tokenizer helpers", () => {
-  it("tokenizes quoted config lines and mirrors dashed/underscored params", () => {
-    expect(looksLikeConfigLine("Node = ss, example.com, 8388")).toBe(true);
-    expect(looksLikeConfigLine("# Node = ss, example.com, 8388")).toBe(false);
-
-    const tokenized = tokenizeConfigLine(
-      '"My Node" = ss, "ss.example.com", 8388, encrypt_method=aes-128-gcm, password=secret, extra'
-    );
-
-    expect(tokenized).toMatchObject({
-      name: "My Node",
-      type: "ss",
-      host: "ss.example.com",
-      port: 8388,
-      params: {
-        encrypt_method: "aes-128-gcm",
-        "encrypt-method": "aes-128-gcm",
-        password: "secret",
-      },
-      extras: ["extra"],
-    });
-    expect(() => tokenizeConfigLine("broken")).toThrow("无效的配置行格式");
-    expect(() => tokenizeConfigLine("Bad = ss, example.com, 70000")).toThrow("配置行中的地址或端口无效");
-  });
-
-  it("normalizes common primitive params", () => {
-    expect(parseBooleanish("yes")).toBe(true);
-    expect(parseBooleanish("off")).toBe(false);
-    expect(parseBooleanish("maybe")).toBeUndefined();
-    expect(parseStringList(undefined)).toBeUndefined();
-    expect(parseStringList(" , ")).toBeUndefined();
-    expect(parseStringList("a, b,,c")).toEqual(["a", "b", "c"]);
-    expect(parseWsHeaders(undefined)).toBeUndefined();
-    expect(parseWsHeaders("bad|also-bad")).toBeUndefined();
-    expect(parseWsHeaders('Host:cdn.example.com|X-Test:"yes"')).toEqual({
-      Host: "cdn.example.com",
-      "X-Test": "yes",
-    });
-    expect(parseIntParam(undefined)).toBeUndefined();
-    expect(parseIntParam("42ms")).toBe(42);
-    expect(parseIntParam("x")).toBeUndefined();
-    expect(isUuidLike("11111111-1111-4111-8111-111111111111")).toBe(true);
-    expect(isUuidLike("not-a-uuid")).toBe(false);
-    expect(inferSkipCertVerify({ "skip-cert-verify": "false" })).toBe(false);
-    expect(inferSkipCertVerify({ "tls-verification": "false" })).toBe(true);
-    expect(inferSkipCertVerify({ "tls-verification": "true" })).toBeUndefined();
-    expect(inferSkipCertVerify({ "allow-insecure": "0" })).toBe(false);
-  });
-});
 
 describe("config line parser", () => {
   it("builds VMess and VLESS transport options", () => {
@@ -550,5 +490,81 @@ describe("config line parser", () => {
     expect(() => mustParseConfigLine("BadType = unknown, unknown.example.com, 443")).toThrow(
       "不支持的配置行协议: unknown"
     );
+  });
+
+  it("builds rare config-line aliases and conservative defaults", () => {
+    expect(mustParseConfigLine("SOCKS5 TLS Alias = socks5-tls, socks-tls-alias.example.com, 1080, over-tls=false")).toMatchObject({
+      name: "SOCKS5 TLS Alias",
+      type: "socks5",
+      tls: false,
+    });
+
+    const httpNoHeaders = mustParseConfigLine("HTTP No Headers = http, http-no-headers.example.com, 8080, headers=bad|Host:");
+    expect(httpNoHeaders).toMatchObject({
+      name: "HTTP No Headers",
+      type: "http",
+      server: "http-no-headers.example.com",
+    });
+    expect(httpNoHeaders.headers).toBeUndefined();
+
+    expect(
+      mustParseConfigLine(
+        "VMess Username = vmess, vmess-user.example.com, 443, username=11111111-1111-4111-8111-111111111111, encryption=auto, udp-relay=false, tls-verification=false, fp=chrome"
+      )
+    ).toMatchObject({
+      name: "VMess Username",
+      type: "vmess",
+      uuid: "11111111-1111-4111-8111-111111111111",
+      cipher: "auto",
+      udp: false,
+      "skip-cert-verify": true,
+      "client-fingerprint": "chrome",
+    });
+
+    expect(
+      mustParseConfigLine(
+        "VLESS Alias = vless, vless-alias.example.com, 443, username=11111111-1111-4111-8111-111111111111, public_key=pub, short_id=sid, packetencoding=xudp, fingerprint=edge, udp-relay=false"
+      )
+    ).toMatchObject({
+      name: "VLESS Alias",
+      type: "vless",
+      uuid: "11111111-1111-4111-8111-111111111111",
+      udp: false,
+      "packet-encoding": "xudp",
+      "client-fingerprint": "edge",
+      "reality-opts": {
+        "public-key": "pub",
+        "short-id": "sid",
+      },
+    });
+
+    expect(
+      mustParseConfigLine("AnyTLS None = anytls, anytls-none.example.com, 443, auth=secret, transport=none, server-name=sni.example.com")
+    ).toMatchObject({
+      name: "AnyTLS None",
+      type: "anytls",
+      password: "secret",
+      sni: "sni.example.com",
+    });
+
+    expect(
+      mustParseConfigLine(
+        "TUIC Alias = tuic, tuic-alias.example.com, 443, uuid=11111111-1111-4111-8111-111111111111, password=secret, congestioncontrol=cubic, udprelaymode=quic, tfo=false"
+      )
+    ).toMatchObject({
+      name: "TUIC Alias",
+      type: "tuic",
+      uuid: "11111111-1111-4111-8111-111111111111",
+      password: "secret",
+      "congestion-controller": "cubic",
+      "udp-relay-mode": "quic",
+      tfo: false,
+    });
+
+    expect(mustParseConfigLine("Snell Loose = snell, snell-loose.example.com, 443, psk=secret, version=bad")).toMatchObject({
+      name: "Snell Loose",
+      type: "snell",
+      psk: "secret",
+    });
   });
 });

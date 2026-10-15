@@ -95,6 +95,29 @@ export interface ListenerConfig {
   [key: string]: unknown;
 }
 
+/**
+ * 分组监听绑定：给一个"已存在的策略组"开本地 mixed inbound 监听端口。
+ * target 保存稳定 ID（而非组显示名），策略组改名后监听仍然有效。
+ * 生成时映射为 listeners 条目：{ name: 自动, type: mixed, listen, port, proxy: 组当前名称, udp: true }。
+ */
+export type GroupListenerTargetKind = "module" | "custom" | "dialer";
+
+export interface GroupListenerTarget {
+  // module = 内置分流组（PROXY_GROUP_MODULES 的 id），custom = 自定义分流组，dialer = 中转组
+  kind: GroupListenerTargetKind;
+  id: string;
+}
+
+export interface GroupListenerBinding {
+  id: string;
+  target: GroupListenerTarget;
+  port: number;
+  // 默认启用；false 时保留配置但不生成 listener
+  enabled?: boolean;
+  // 默认 false → listen 127.0.0.1；true → 0.0.0.0（允许局域网访问，需用户显式开启）
+  allowLan?: boolean;
+}
+
 export interface SnifferConfig {
   enable?: boolean;
   "parse-pure-ip"?: boolean;
@@ -134,7 +157,6 @@ export interface ClashConfig {
   "unified-delay"?: boolean;
   "tcp-concurrent"?: boolean;
   "find-process-mode"?: string;
-  "global-client-fingerprint"?: string;
   ipv6?: boolean;
   
   dns?: DNSConfig;
@@ -189,11 +211,84 @@ export interface UserConfig {
 
 export interface CustomRule {
   id: string;
-  type: "DOMAIN" | "DOMAIN-SUFFIX" | "DOMAIN-KEYWORD" | "IP-CIDR" | "IP-CIDR6" | "GEOIP" | "GEOSITE" | "PROCESS-NAME" | "DST-PORT" | "SRC-PORT" | "RULE-SET";
+  type: "DOMAIN" | "DOMAIN-SUFFIX" | "DOMAIN-KEYWORD" | "IP-CIDR" | "IP-CIDR6" | "GEOIP" | "GEOSITE" | "PROCESS-NAME" | "DST-PORT" | "SRC-PORT";
   value: string;
-  target: string;
+  target: ProxyGroupRuleTarget;
   noResolve?: boolean;
 }
+
+export type RuleSetBehavior = "domain" | "ipcidr";
+
+export type NodeRegion =
+  | "us"
+  | "hk"
+  | "jp"
+  | "sg"
+  | "tw"
+  | "kr"
+  | "uk"
+  | "de"
+  | "fr"
+  | "ca"
+  | "au"
+  | "other";
+
+export type ProxyGroupTargetRef =
+  | { kind: "module"; id: string }
+  | { kind: "custom"; id: string };
+
+export type ProxyGroupRuleTarget = ProxyGroupTargetRef | string;
+
+export type ProxyGroupMemberRef =
+  | { kind: "node"; name: string }
+  | { kind: "module"; id: string }
+  | { kind: "custom"; id: string }
+  | { kind: "direct" }
+  | { kind: "reject" };
+
+export const PROXY_GROUP_GROUP_TYPES = [
+  "select",
+  "url-test",
+  "fallback",
+  "load-balance",
+  "direct-first",
+  "reject-first",
+] as const;
+
+export type ProxyGroupGroupType = (typeof PROXY_GROUP_GROUP_TYPES)[number];
+
+export function isProxyGroupGroupType(value: unknown): value is ProxyGroupGroupType {
+  return typeof value === "string" && (PROXY_GROUP_GROUP_TYPES as readonly string[]).includes(value);
+}
+
+export interface ProxyGroupAdvancedConfig {
+  testUrl?: string;
+  sourceIds?: string[];
+  regions?: NodeRegion[];
+  includeRegex?: string;
+  excludeRegex?: string;
+  groupType?: ProxyGroupGroupType;
+  strategy?: LoadBalanceStrategy;
+  extraMembers?: ProxyGroupMemberRef[];
+  excludedMembers?: ProxyGroupMemberRef[];
+  memberOrder?: ProxyGroupMemberRef[];
+}
+
+export interface CustomRuleSet {
+  id: string;
+  name: string;
+  behavior: RuleSetBehavior;
+  path: string;
+  target: ProxyGroupRuleTarget;
+  noResolve?: boolean;
+}
+
+export type BuiltinRuleEdit = {
+  target?: ProxyGroupRuleTarget;
+  enabled?: false;
+};
+
+export type BuiltinRuleEdits = Record<string, BuiltinRuleEdit>;
 
 /**
  * 自定义代理组
@@ -202,15 +297,13 @@ export interface CustomProxyGroup {
   id: string;
   name: string;
   emoji: string;
-  groupType: "select" | "url-test" | "fallback" | "load-balance" | "direct-first" | "reject-first";
+  enabled?: boolean;
+  description?: string;
+  memberSource?: "filtered-nodes";
+  includeInGroupMembers?: boolean;
+  groupType: ProxyGroupGroupType;
   strategy?: LoadBalanceStrategy;
-  rules: {
-    id: string;
-    name: string;
-    behavior: "domain" | "ipcidr";
-    url: string;
-    noResolve?: boolean;
-  }[];
+  advanced?: ProxyGroupAdvancedConfig;
 }
 
 /**
@@ -226,4 +319,3 @@ export interface TemplateConfig {
   rules: string[];
   dns: Partial<DNSConfig>;
 }
-

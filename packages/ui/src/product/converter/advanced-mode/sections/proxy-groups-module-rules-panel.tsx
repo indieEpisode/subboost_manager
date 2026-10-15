@@ -1,11 +1,11 @@
 "use client";
 
 import * as React from "react";
-import * as Popover from "@radix-ui/react-popover";
 import { HelpCircle, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { Badge } from "@subboost/ui/components/ui/badge";
 import { Button } from "@subboost/ui/components/ui/button";
 import { confirmDialog } from "@subboost/ui/components/ui/confirm-dialog";
+import { HelpPopover } from "@subboost/ui/components/ui/popover";
 import { Switch } from "@subboost/ui/components/ui/switch";
 import { PROXY_GROUP_MODULES, type ProxyGroupModule, type ProxyGroupRule } from "@subboost/core/generator/proxy-groups";
 import {
@@ -13,16 +13,16 @@ import {
   getEffectiveModuleRuleItems,
   getExcludedModuleRuleIds,
   isModuleRuleMovedFrom,
-  type ModuleRuleExclusions,
+  type HiddenPresetRuleIds,
 } from "@subboost/core/generator/module-rules";
 import { EXPERIMENTAL_CN_RULE } from "@subboost/core/generator/rules";
 import { resolveProxyGroupModuleName } from "@subboost/core/proxy-group-name";
 import { cn } from "@subboost/ui/lib/utils";
 import { useProductApiAdapter } from "@subboost/ui/product/api-adapter";
-import type { CustomProxyGroup, ModuleRuleOverride } from "@subboost/ui/store/config-store";
+import type { CustomProxyGroup, RuleSetDraft } from "@subboost/ui/store/config-store";
 import type {
   CustomRuleListItem,
-  ProxyGroupRuleTarget,
+  ProxyGroupRuleTargetOption,
 } from "./proxy-group-rule-targets";
 import {
   ProxyGroupManualRuleRow,
@@ -45,6 +45,12 @@ type CnCandidateRule = {
   parentRuleId?: string;
   parentModuleId?: string;
 };
+
+function isModuleRuleMoveTarget(
+  target: ProxyGroupRuleTargetOption,
+): target is ProxyGroupRuleTargetOption & MoveTarget {
+  return target.kind === "module" || target.kind === "custom";
+}
 
 function isCnCandidateRule(value: unknown): value is CnCandidateRule {
   if (!value || typeof value !== "object") return false;
@@ -77,8 +83,8 @@ export function ProxyGroupsModuleRulesPanel({
   module,
   enabledProxyGroups,
   hiddenProxyGroups,
-  moduleRuleOverrides,
-  moduleRuleExclusions,
+  ruleSetsByTarget,
+  hiddenPresetRuleIds,
   customProxyGroups,
   manualRules,
   manualRuleTargets,
@@ -93,6 +99,7 @@ export function ProxyGroupsModuleRulesPanel({
   onMoveManualRule,
   onRemoveManualRule,
   onRestoreRule,
+  onResetRuleTarget,
   cnIpNoResolve,
   onChangeCnIpNoResolve,
   experimentalCnUseCnRuleSet,
@@ -101,22 +108,23 @@ export function ProxyGroupsModuleRulesPanel({
   module: ProxyGroupModule;
   enabledProxyGroups: string[];
   hiddenProxyGroups: string[];
-  moduleRuleOverrides: Record<string, ModuleRuleOverride[]>;
-  moduleRuleExclusions: ModuleRuleExclusions;
+  ruleSetsByTarget: Record<string, RuleSetDraft[]>;
+  hiddenPresetRuleIds: HiddenPresetRuleIds;
   customProxyGroups: CustomProxyGroup[];
   manualRules: CustomRuleListItem[];
-  manualRuleTargets: ProxyGroupRuleTarget[];
+  manualRuleTargets: ProxyGroupRuleTargetOption[];
   proxyGroupNameOverrides: Record<string, string>;
   moduleRuleEditWarningAccepted: boolean;
   acceptModuleRuleEditWarning: () => void;
-  onAddRules: (rules: ModuleRuleOverride[]) => void;
-  onAddRulesToModule: (moduleId: string, rules: ModuleRuleOverride[]) => void;
-  onAddRuleToCustomGroup: (groupId: string, rule: ModuleRuleOverride) => void;
+  onAddRules: (rules: RuleSetDraft[]) => void;
+  onAddRulesToModule: (moduleId: string, rules: RuleSetDraft[]) => void;
+  onAddRuleToCustomGroup: (groupId: string, rule: RuleSetDraft) => void;
   onRemoveRule: (ruleId: string) => void;
   onMoveRule: (ruleId: string, target: MoveTarget) => void;
-  onMoveManualRule: (ruleId: string, targetName: string) => void;
+  onMoveManualRule: (ruleId: string, target: ProxyGroupRuleTargetOption) => void;
   onRemoveManualRule: (index: number) => void;
   onRestoreRule: (ruleId: string) => void;
+  onResetRuleTarget: (ruleId: string) => void;
   cnIpNoResolve: boolean;
   onChangeCnIpNoResolve: (value: boolean) => void;
   experimentalCnUseCnRuleSet: boolean;
@@ -127,9 +135,9 @@ export function ProxyGroupsModuleRulesPanel({
     () => enabledProxyGroups.map((id) => id.trim()).filter(Boolean).join(","),
     [enabledProxyGroups]
   );
-  const moduleRuleExclusionsKey = React.useMemo(
+  const hiddenPresetRuleIdsKey = React.useMemo(
     () =>
-      Object.entries(moduleRuleExclusions || {})
+      Object.entries(hiddenPresetRuleIds || {})
         .flatMap(([moduleId, ruleIds]) =>
           Array.isArray(ruleIds)
             ? ruleIds.map((ruleId) => `${moduleId.trim()}:${String(ruleId).trim()}`)
@@ -139,27 +147,27 @@ export function ProxyGroupsModuleRulesPanel({
         .filter((key) => key && !key.endsWith(":"))
         .sort((a, b) => a.localeCompare(b))
         .join(","),
-    [moduleRuleExclusions]
+    [hiddenPresetRuleIds]
   );
   const [cnCandidateRules, setCnCandidateRules] = React.useState<CnCandidateRule[]>([]);
 
   const activeRules = React.useMemo(
-    () => getEffectiveModuleRuleItems(module, moduleRuleOverrides, moduleRuleExclusions),
-    [module, moduleRuleExclusions, moduleRuleOverrides]
+    () => getEffectiveModuleRuleItems(module, ruleSetsByTarget, hiddenPresetRuleIds),
+    [module, hiddenPresetRuleIds, ruleSetsByTarget]
   );
 
   const inactiveRules = React.useMemo<InactiveRuleRow[]>(() => {
-    const excluded = getExcludedModuleRuleIds(module.id, moduleRuleExclusions);
+    const excluded = getExcludedModuleRuleIds(module.id, hiddenPresetRuleIds);
     return module.rules
       .filter((rule) => rule?.id && excluded.has(rule.id))
       .map((rule) => ({
         ...rule,
         source: "preset" as const,
-        state: isModuleRuleMovedFrom(module.id, rule.id, moduleRuleOverrides, customProxyGroups)
+        state: isModuleRuleMovedFrom(module.id, rule.id, ruleSetsByTarget)
           ? "moved" as const
           : "removed" as const,
       }));
-  }, [customProxyGroups, module, moduleRuleExclusions, moduleRuleOverrides]);
+  }, [module, hiddenPresetRuleIds, ruleSetsByTarget]);
 
   const rules = React.useMemo<RuleRow[]>(
     () => [
@@ -189,7 +197,7 @@ export function ProxyGroupsModuleRulesPanel({
         id: targetModule.id,
         name: resolveProxyGroupModuleName(targetModule, proxyGroupNameOverrides?.[targetModule.id]),
       })),
-      ...customProxyGroups.map((group) => ({
+      ...customProxyGroups.filter((group) => group.enabled !== false).map((group) => ({
         kind: "custom" as const,
         id: group.id,
         name: group.name,
@@ -207,7 +215,7 @@ export function ProxyGroupsModuleRulesPanel({
     const controller = new AbortController();
     const params = new URLSearchParams();
     if (enabledProxyGroupsKey) params.set("modules", enabledProxyGroupsKey);
-    if (moduleRuleExclusionsKey) params.set("excluded", moduleRuleExclusionsKey);
+    if (hiddenPresetRuleIdsKey) params.set("excluded", hiddenPresetRuleIdsKey);
 
     if (!rulesApi?.loadCnCandidateRules) {
       setCnCandidateRules([]);
@@ -228,7 +236,7 @@ export function ProxyGroupsModuleRulesPanel({
       });
 
     return () => controller.abort();
-  }, [enabledProxyGroupsKey, module.id, moduleRuleExclusionsKey, rulesApi]);
+  }, [enabledProxyGroupsKey, module.id, hiddenPresetRuleIdsKey, rulesApi]);
 
   const ensurePresetEditWarning = React.useCallback(async () => {
     if (moduleRuleEditWarningAccepted) return true;
@@ -241,7 +249,7 @@ export function ProxyGroupsModuleRulesPanel({
             <span className="font-medium text-amber-200">警告：</span>
             删除或移动预设规则会改变当前配置的分流命中结果。
           </span>
-          <span className="mt-3 block leading-6 text-white/65">
+          <span className="mt-3 block leading-6 text-fg-65">
             如果你不知道修改规则集的影响，请不要动它。
           </span>
         </span>
@@ -263,7 +271,7 @@ export function ProxyGroupsModuleRulesPanel({
   );
   const moveExperimentalCnRule = React.useCallback(
     (target: MoveTarget) => {
-      const rule: ModuleRuleOverride = {
+      const rule: RuleSetDraft = {
         id: EXPERIMENTAL_CN_RULE.id,
         name: EXPERIMENTAL_CN_RULE.name,
         behavior: EXPERIMENTAL_CN_RULE.behavior,
@@ -280,13 +288,13 @@ export function ProxyGroupsModuleRulesPanel({
   );
 
   return (
-    <div className="mt-2 border-t border-white/10 pt-1">
+    <div className="space-y-1">
       {rules.length === 0 && manualRules.length === 0 ? (
-        <div className="px-3 py-4 text-center text-[11px] text-white/40">
+        <div className="px-3 py-4 text-center text-[11px] text-fg-40">
           当前没有生效的规则集。
         </div>
       ) : (
-        <div className="space-y-1 py-1">
+        <div className="space-y-1">
           {rules.map((rule) => {
             if (rule.state !== "active") {
               const isCnIpRule = module.id === "cn" && rule.id === "cn-ip";
@@ -310,9 +318,13 @@ export function ProxyGroupsModuleRulesPanel({
                           ? "text-orange-300/70 hover:text-orange-200"
                           : "text-red-300/70 hover:text-red-200",
                       )}
-                      title="恢复规则集"
-                      aria-label={`恢复 ${rule.name} 规则集`}
-                      onClick={() => onRestoreRule(rule.id)}
+                      title={rule.state === "moved" ? "恢复默认目标" : "恢复规则集"}
+                      aria-label={`${rule.state === "moved" ? "恢复默认目标" : "恢复"} ${rule.name} 规则集`}
+                      onClick={() =>
+                        rule.state === "moved"
+                          ? onResetRuleTarget(rule.id)
+                          : onRestoreRule(rule.id)
+                      }
                     >
                       <RotateCcw className="h-3.5 w-3.5" />
                     </Button>
@@ -336,8 +348,12 @@ export function ProxyGroupsModuleRulesPanel({
                     {isCnIpRule && (
                       <div className="flex h-7 shrink-0 items-center gap-1">
                         <CnIpNoResolveHelpButton />
-                        <span className="proxy-group-rule-no-resolve-label text-[10px] text-white/50">no-resolve</span>
-                        <Switch checked={cnIpNoResolve} onCheckedChange={onChangeCnIpNoResolve} />
+                        <span className="proxy-group-rule-no-resolve-label text-[10px] text-fg-50">no-resolve</span>
+                        <Switch
+                          checked={cnIpNoResolve}
+                          onCheckedChange={onChangeCnIpNoResolve}
+                          aria-label="国内 IP 规则不解析域名"
+                        />
                       </div>
                     )}
                     <ProxyGroupRuleMoveMenu
@@ -347,7 +363,7 @@ export function ProxyGroupsModuleRulesPanel({
                       kinds={["module", "custom"]}
                       currentTarget={{ kind: "module", id: module.id, name: moduleDisplayName }}
                       onMove={(target) => {
-                        if (isRuleSetMoveTarget(target)) {
+                        if (isRuleSetMoveTarget(target) && isModuleRuleMoveTarget(target)) {
                           void moveRule(rule, target);
                         }
                       }}
@@ -356,7 +372,7 @@ export function ProxyGroupsModuleRulesPanel({
                       type="button"
                       variant="ghost"
                       size="sm"
-                      className="h-7 px-2 text-white/35 hover:text-red-300"
+                      className="h-7 px-2 text-fg-35 hover:text-red-300"
                       title="删除规则集"
                       onClick={async () => {
                         if (rule.source === "preset" && !(await ensurePresetEditWarning())) return;
@@ -376,7 +392,7 @@ export function ProxyGroupsModuleRulesPanel({
               item={item}
               targets={manualRuleTargets}
               currentTargetName={moduleDisplayName}
-              onMove={(nextItem, target) => onMoveManualRule(nextItem.rule.id, target.name)}
+              onMove={(nextItem, target) => onMoveManualRule(nextItem.rule.id, target)}
               onRemove={({ index }) => onRemoveManualRule(index)}
             />
           ))}
@@ -384,11 +400,11 @@ export function ProxyGroupsModuleRulesPanel({
       )}
 
       {module.id === "cn" && (
-        <div className="border-t border-white/10 py-1">
+        <div>
           <div
             className={cn(
-              "proxy-group-rule-row grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-2 py-2 pl-8 pr-2",
-              !experimentalCnUseCnRuleSet && "rounded border border-red-500/20 bg-red-500/10"
+              "proxy-group-rule-row grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 rounded border border-ink/10 bg-ink/[0.04] px-2 py-2",
+              !experimentalCnUseCnRuleSet && "border-red-500/20 bg-red-500/10"
             )}
           >
             <div className="min-w-0 space-y-1">
@@ -397,8 +413,8 @@ export function ProxyGroupsModuleRulesPanel({
                   className={cn(
                     "min-w-0 break-words text-xs font-medium leading-5",
                     experimentalCnUseCnRuleSet
-                      ? "text-white"
-                      : "text-white/50 line-through decoration-red-300/70"
+                      ? "text-fg"
+                      : "text-fg-50 line-through decoration-red-300/70"
                   )}
                   title={EXPERIMENTAL_CN_RULE.name}
                 >
@@ -412,7 +428,7 @@ export function ProxyGroupsModuleRulesPanel({
                 <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 px-1.5 py-0 text-[9px] text-amber-200">
                   实验性
                 </Badge>
-                <Badge variant="outline" className="border-white/10 bg-white/5 px-1.5 py-0 text-[9px] text-white/55">
+                <Badge variant="outline" className="border-ink/10 bg-ink/5 px-1.5 py-0 text-[9px] text-fg-55">
                   域名
                 </Badge>
               </div>
@@ -421,8 +437,8 @@ export function ProxyGroupsModuleRulesPanel({
                 className={cn(
                   "min-w-0 break-all font-mono text-[10px]",
                   experimentalCnUseCnRuleSet
-                    ? "text-white/35"
-                    : "text-white/30 line-through decoration-red-300/50"
+                    ? "text-fg-35"
+                    : "text-fg-30 line-through decoration-red-300/50"
                 )}
                 title={`${EXPERIMENTAL_CN_RULE.id} · ${EXPERIMENTAL_CN_RULE.path}`}
               >
@@ -441,7 +457,7 @@ export function ProxyGroupsModuleRulesPanel({
                     kinds={["module", "custom"]}
                     currentTarget={{ kind: "module", id: module.id, name: moduleDisplayName }}
                     onMove={(target) => {
-                      if (isRuleSetMoveTarget(target)) {
+                      if (isRuleSetMoveTarget(target) && isModuleRuleMoveTarget(target)) {
                         moveExperimentalCnRule(target);
                       }
                     }}
@@ -450,7 +466,7 @@ export function ProxyGroupsModuleRulesPanel({
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-7 px-2 text-white/35 hover:text-red-300"
+                    className="h-7 px-2 text-fg-35 hover:text-red-300"
                     title="删除规则集"
                     aria-label={`删除 ${EXPERIMENTAL_CN_RULE.name} 规则集`}
                     onClick={() => onChangeExperimentalCnUseCnRuleSet(false)}
@@ -477,65 +493,48 @@ export function ProxyGroupsModuleRulesPanel({
       )}
 
       {module.id === "cn" && availableCnCandidateRules.length > 0 && (
-        <div className="border-t border-white/10 px-2 py-2">
-          <div className="mb-1 flex items-center gap-1.5 pl-6 pr-2">
-            <div className="text-xs font-medium text-white">中国相关子规则集</div>
-            <Popover.Root>
-              <Popover.Trigger asChild>
-                <button
-                  type="button"
-                  className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/40 transition-colors hover:bg-white/10 hover:text-white/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/50 focus-visible:ring-offset-2 focus-visible:ring-offset-black"
-                  aria-label="实验性：中国业务子规则集"
-                  title="实验性：中国业务子规则集"
-                >
-                  <HelpCircle className="h-3.5 w-3.5" />
-                </button>
-              </Popover.Trigger>
-              <Popover.Portal>
-                <Popover.Content
-                  side="bottom"
-                  align="start"
-                  sideOffset={8}
-                  className="z-50 w-[420px] rounded-xl border border-white/10 bg-black/90 backdrop-blur-md shadow-2xl p-3"
-                >
-                  <div className="space-y-2 text-xs">
-                    <div className="flex items-center gap-2">
-                      <HelpCircle className="h-4 w-4 text-amber-300" />
-                      <div className="text-white font-medium">
-                        实验性：中国业务子规则集
-                      </div>
-                    </div>
-                    <div className="text-white/60 leading-relaxed">
-                      这些是已启用规则集的中国子集，通常表示对应服务有中国业务；但不代表必然适合分流至
-                      <span className="text-white/75"> 🔒 国内服务</span>，请按自身需求启用。
-                    </div>
-                  </div>
-                  <Popover.Arrow className="fill-white/10" />
-                </Popover.Content>
-              </Popover.Portal>
-            </Popover.Root>
+        <div className="rounded border border-ink/10 bg-ink/[0.03] px-2 py-2">
+          <div className="mb-2 flex items-center gap-1.5">
+            <div className="text-xs font-medium text-fg">中国相关子规则集</div>
+            <HelpPopover
+              label="实验性：中国业务子规则集"
+              side="bottom"
+              align="start"
+              contentClassName="w-[420px] bg-shade/90 p-3"
+            >
+              <div className="space-y-2 text-xs">
+                <div className="flex items-center gap-2">
+                  <HelpCircle className="h-4 w-4 text-amber-300" aria-hidden="true" />
+                  <p className="font-medium text-fg">实验性：中国业务子规则集</p>
+                </div>
+                <p className="leading-relaxed text-fg-60">
+                  这些是已启用规则集的中国子集，通常表示对应服务有中国业务；但不代表必然适合分流至
+                  <span className="text-fg-75"> 🔒 国内服务</span>，请按自身需求启用。
+                </p>
+              </div>
+            </HelpPopover>
           </div>
-          <div className="space-y-1 px-4">
+          <div className="space-y-1">
             {availableCnCandidateRules.map((rule) => (
               <div
                 key={rule.id}
-                className="proxy-group-rule-row grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-2 rounded border border-white/10 bg-white/[0.03] px-2 py-2"
+                className="proxy-group-rule-row grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 rounded border border-ink/10 bg-ink/[0.03] px-2 py-2"
               >
                 <div className="min-w-0 space-y-1">
                   <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                    <span className="min-w-0 break-words text-xs font-medium leading-5 text-white" title={rule.name}>
+                    <span className="min-w-0 break-words text-xs font-medium leading-5 text-fg" title={rule.name}>
                       {rule.name}
                     </span>
-                    <Badge variant="outline" className="border-white/10 bg-white/5 px-1.5 py-0 text-[9px] text-white/55">
+                    <Badge variant="outline" className="border-ink/10 bg-ink/5 px-1.5 py-0 text-[9px] text-fg-55">
                       域名
                     </Badge>
                     {rule.parentRuleId && (
-                      <Badge variant="outline" className="border-white/10 bg-white/5 px-1.5 py-0 text-[9px] text-white/45">
+                      <Badge variant="outline" className="border-ink/10 bg-ink/5 px-1.5 py-0 text-[9px] text-fg-45">
                         {rule.parentRuleId}
                       </Badge>
                     )}
                   </div>
-                  <div className="min-w-0 break-all font-mono text-[10px] text-white/35" title={`${rule.id} · ${rule.path}`}>
+                  <div className="min-w-0 break-all font-mono text-[10px] text-fg-35" title={`${rule.id} · ${rule.path}`}>
                     {rule.path}
                   </div>
                 </div>
@@ -544,7 +543,7 @@ export function ProxyGroupsModuleRulesPanel({
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-7 px-2 text-white/45 hover:text-emerald-200"
+                    className="h-7 px-2 text-fg-45 hover:text-emerald-200"
                     title="启用规则集"
                     aria-label={`启用 ${rule.name} 规则集`}
                     onClick={() =>

@@ -544,4 +544,5 @@ describe("Mihomo proxy sanitizer", () => {
       },
     });
   });
+
 });

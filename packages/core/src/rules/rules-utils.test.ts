@@ -11,11 +11,9 @@ import { parseCustomRuleBatchImport } from "./custom-rule-batch-import";
 import {
   ensureCustomRuleId,
   ensureCustomRulesHaveIds,
-  getCustomGroupRuleOrderKey,
   getCustomRuleOrderKey,
   isCustomRuleType,
   listEditableRuleOrderKeys,
-  reconcileRuleOrder,
 } from "./custom-rule-utils";
 
 describe("custom rule helpers", () => {
@@ -37,41 +35,22 @@ describe("custom rule helpers", () => {
     expect(existing.id).toBe("custom-id");
     expect(ensureCustomRulesHaveIds([rule, { type: "DOMAIN", value: "x.com", target: "DIRECT" }])).toHaveLength(2);
     expect(getCustomRuleOrderKey("r1")).toBe("custom-rule:r1");
-    expect(getCustomGroupRuleOrderKey("g1", "r1")).toBe("custom-group:g1:r1");
     expect(
       listEditableRuleOrderKeys(
         [rule],
         [
           {
-            id: "group",
-            name: "Group",
-            emoji: "G",
-            groupType: "select",
-            rules: [{ id: "nested", name: "Nested", behavior: "domain", url: "https://rules.example.com/a.mrs" }],
+            id: "nested",
+            name: "Nested",
+            behavior: "domain",
+            path: "https://rules.example.com/a.mrs",
+            target: "Group",
           },
         ]
       )
     ).toEqual([
       "custom-rule:custom-rule-domain-suffix-example-com-direct-3",
-      "custom-group:group:nested",
-    ]);
-    expect(
-      reconcileRuleOrder(
-        ["missing", "custom-group:group:nested", "custom-group:group:nested"],
-        [rule],
-        [
-          {
-            id: "group",
-            name: "Group",
-            emoji: "G",
-            groupType: "select",
-            rules: [{ id: "nested", name: "Nested", behavior: "domain", url: "https://rules.example.com/a.mrs" }],
-          },
-        ]
-      )
-    ).toEqual([
-      "custom-group:group:nested",
-      "custom-rule:custom-rule-domain-suffix-example-com-direct-3",
+      "custom-rule-set:nested",
     ]);
   });
 
@@ -145,16 +124,16 @@ describe("custom rule helpers", () => {
     });
 
     expect(result.skippedCount).toBe(2);
-    expect(result.errorCount).toBe(5);
+    expect(result.errorCount).toBe(4);
     expect(result.canImport).toBe(false);
     expect(result.items.map((item) => item.message)).toContain("规则列数过多");
     expect(result.items.map((item) => item.message)).toContain("规则值不能为空");
-    expect(result.items.map((item) => item.message)).toContain("目标不能为空");
+    expect(result.rules[0]).toMatchObject({ target: "DIRECT", value: "example.com" });
     expect(result.items.map((item) => item.message)).toContain("未知目标：Unknown");
     expect(result.items.map((item) => item.message)).toContain("不支持的尾列：bad-tail");
   });
 
-  it("imports Clash rules block and YAML list rule rows", () => {
+  it("rejects manual RULE-SET rows in Clash rules block imports", () => {
     const result = parseCustomRuleBatchImport({
       text: [
         "rules:",
@@ -169,15 +148,17 @@ describe("custom rule helpers", () => {
       existingRules: [],
     });
 
-    expect(result.readyCount).toBe(3);
+    expect(result.readyCount).toBe(0);
     expect(result.skippedCount).toBe(1);
-    expect(result.canImport).toBe(true);
+    expect(result.errorCount).toBe(3);
+    expect(result.canImport).toBe(false);
     expect(result.items[0]).toMatchObject({ status: "skipped", message: "rules 块标记" });
-    expect(result.rules).toEqual([
-      expect.objectContaining({ type: "RULE-SET", value: "google@ads", target: "Proxy" }),
-      expect.objectContaining({ type: "RULE-SET", value: "google@search", target: "🔍 谷歌服务" }),
-      expect.objectContaining({ type: "RULE-SET", value: "google@video", target: "🔍 谷歌服务" }),
+    expect(result.items.slice(1).map((item) => item.message)).toEqual([
+      "请输入有效的规则集 HTTP/HTTPS 链接",
+      "请输入有效的规则集 HTTP/HTTPS 链接",
+      "请输入有效的规则集 HTTP/HTTPS 链接",
     ]);
+    expect(result.rules).toEqual([]);
   });
 });
 

@@ -1,41 +1,39 @@
-# SubBoost v2.4.0
+# SubBoost v2.9.0
 
 ## 中文
 
-### 初始发布
+### 新增
 
-这是 SubBoost 的首次公开发布。这个版本提供一个可以自行部署的 SubBoost 包，适合希望在自己的服务器上运行 SubBoost，并管理订阅转换、模板和规则配置的用户。
+- 新增明暗主题切换；未手动选择时跟随系统设置，并改善按钮、标签和平板导航的显示。
+- 新增订阅链接二维码，方便在其他设备上扫码导入。
+- 增强规则配置：支持手动添加和批量导入 MRS 规则集、按名称保留或排除节点，以及为自动测速代理组设置独立测速地址。
 
-### 包含内容
+### 修复
 
-- 一键部署脚本和 Docker Compose 配置，用于在 Linux 服务器上安装 SubBoost。
-- 本地 Web 管理界面，用于创建管理员账号，并管理订阅、模板和规则。
-- 共享的订阅解析、订阅生成、模板处理和规则处理能力。
-- GitHub Release 资产：`install.sh`、`release.json`、`docker-compose.image.yml` 和 `subboost-manager`。
-- 基于 AGPL-3.0-only 许可证发布的公开源码。
+- 改善外部订阅导入的完整性，修复部分协议字段在导入或生成配置时丢失的问题。
+- 修复刷新、重命名节点后部分链式代理和代理组引用失效，以及预置规则移动到其他代理组后未生效的问题。
+- 修复切换订阅或账号时编辑内容串用、旧请求覆盖当前状态的问题；浏览器存储不可用时仍可继续编辑当前配置。
+- 修复退出登录后旧会话仍可继续使用的问题，并更新相关依赖。
 
-### 安装和更新
+### 升级说明
 
-- 这是首次发布，新安装不需要人工迁移。
-- 安装后，后续版本可以继续使用 `subboost update` 更新。
-- 建议妥善保存 `/opt/subboost/.env` 和数据库备份，方便以后迁移或恢复。
+- 自部署用户可在正式发行后运行 `subboost update`。升级器会先创建并验证数据库备份；新版本启动时自动创建退出登录记录表，无需手动执行数据库迁移。使用源码部署的用户应运行项目数据库迁移命令后再启动。
 
 ## English
 
-### Initial Release
+### New Features
 
-This is the first public release of SubBoost. This version provides a self-hostable SubBoost package for users who want to run SubBoost on their own server and manage subscription conversion, templates, and rule configuration.
+- Added light and dark themes. The theme follows system settings until manually selected, with improved buttons, labels, and tablet navigation.
+- Added QR codes for subscription links, making it easier to import subscriptions on other devices.
+- Expanded rule configuration with manual addition and batch import of MRS rule sets, node inclusion and exclusion by name, and separate test URLs for automatic latency-testing proxy groups.
 
-### What's Included
+### Fixes
 
-- A one-click deployment script and Docker Compose configuration for installing SubBoost on a Linux server.
-- A local web management interface for creating an administrator account and managing subscriptions, templates, and rules.
-- Shared subscription parsing, subscription generation, template processing, and rule processing capabilities.
-- GitHub Release assets: `install.sh`, `release.json`, `docker-compose.image.yml`, and `subboost-manager`.
-- Public source code released under the AGPL-3.0-only license.
+- Improved the completeness of external subscription imports and fixed protocol fields being lost during import or configuration generation.
+- Fixed some chained proxy and proxy group references breaking after node refreshes or renames, and preset rules not taking effect after being moved to another proxy group.
+- Fixed editing content carrying over when switching subscriptions or accounts, and stale requests overwriting the current state. The current configuration remains editable when browser storage is unavailable.
+- Fixed old sessions remaining usable after logout and updated related dependencies.
 
-### Installation and Updates
+### Upgrade Notes
 
-- This is the first release, so new installations do not require manual migration.
-- After installation, future versions can continue to be updated with `subboost update`.
-- Keep `/opt/subboost/.env` and database backups safe so future migration or recovery is easier.
+- Self-hosted users can run `subboost update` after the stable release is published. The updater first creates and verifies a database backup, and the new version automatically creates the logout-record table at startup, without a manual database migration. Users deploying from source should run the project's database migration command before starting the application.

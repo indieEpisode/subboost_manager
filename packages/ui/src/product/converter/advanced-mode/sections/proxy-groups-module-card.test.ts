@@ -14,20 +14,24 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@radix-ui/react-popover", () => ({
+  Anchor: (props: any) => React.createElement("span", null, props.children),
   Arrow: () => null,
   Content: ({ align, children, className, side }: any) => React.createElement("div", { align, className, side }, children),
+  Close: (props: any) => React.createElement("button", null, props.children),
   Portal: (props: any) => React.createElement("div", null, props.children),
   Root: (props: any) => React.createElement("div", null, props.children),
   Trigger: (props: any) => React.createElement("div", null, props.children),
 }));
 
 vi.mock("lucide-react", () => ({
+  CircleHelp: () => React.createElement("span", null, "help-icon"),
   Check: () => React.createElement("span", null, "check-icon"),
   ChevronDown: () => React.createElement("span", null, "down-icon"),
   ChevronRight: () => React.createElement("span", null, "right-icon"),
   HelpCircle: () => React.createElement("span", null, "help-icon"),
   Pencil: () => React.createElement("span", null, "pencil-icon"),
   Shuffle: () => React.createElement("span", null, "shuffle-icon"),
+  SlidersHorizontal: () => React.createElement("span", null, "sliders-icon"),
   Trash2: () => React.createElement("span", null, "trash-icon"),
   X: () => React.createElement("span", null, "x-icon"),
 }));
@@ -72,6 +76,8 @@ vi.mock("./proxy-groups-module-rules-panel", () => ({
 
 import { ProxyGroupsModuleCard } from "./proxy-groups-module-card";
 
+type ModuleCardProps = React.ComponentProps<typeof ProxyGroupsModuleCard>;
+
 const baseModule: ProxyGroupModule = {
   id: "gemini",
   name: "Gemini",
@@ -85,7 +91,7 @@ const baseModule: ProxyGroupModule = {
   ],
 };
 
-function props(overrides: Record<string, unknown> = {}) {
+function props(overrides: Partial<ModuleCardProps> = {}): ModuleCardProps {
   return {
     module: baseModule,
     display: { full: "Gemini Display" },
@@ -100,8 +106,8 @@ function props(overrides: Record<string, unknown> = {}) {
     onCommitEditing: vi.fn(),
     onHide: vi.fn(),
     extraRules: [{ id: "extra", name: "Extra", behavior: "domain" as const, path: "geosite/extra.mrs" }],
-    moduleRuleOverrides: {},
-    moduleRuleExclusions: {},
+    ruleSetsByTarget: {},
+    hiddenPresetRuleIds: {},
     customProxyGroups: [],
     manualRules: [{ index: 0, rule: { id: "manual-1", type: "DOMAIN" as const, value: "example.com", target: "Proxy" } }],
     manualRuleTargets: [{ kind: "module" as const, id: "gemini", name: "Gemini Display" }],
@@ -120,6 +126,7 @@ function props(overrides: Record<string, unknown> = {}) {
     onMoveManualRule: vi.fn(),
     onRemoveManualRule: vi.fn(),
     onRestoreRule: vi.fn(),
+    onResetRuleTarget: vi.fn(),
     cnIpNoResolve: true,
     onChangeCnIpNoResolve: vi.fn(),
     experimentalCnUseCnRuleSet: false,
@@ -147,13 +154,11 @@ describe("ProxyGroupsModuleCard", () => {
     expect(html).toContain("Gemini Display");
     expect(html).toContain("AI description");
     expect(html).toContain("3 规则");
-    expect(html).toContain("+1 自定义");
-    expect(html).toContain("+1 手动");
-    expect(html).toContain("已移动 1");
-    expect(html).toContain("已移除 1");
     expect(html).toContain("Gemini 分流说明");
     expect(html).toContain("rules-panel");
     expect(mocks.panels[0]).toEqual(expect.objectContaining({ module: baseModule, cnIpNoResolve: true }));
+    expect(html).toContain('aria-label="收起 Gemini Display"');
+    expect(html).toContain('aria-expanded="true"');
 
     capturesClick(html);
     mocks.buttons.find((button) => button.title === "改名").onClick({ stopPropagation: vi.fn() });
@@ -184,6 +189,65 @@ describe("ProxyGroupsModuleCard", () => {
     expect(mocks.panels).toHaveLength(0);
   });
 
+  it("handles optional description editing and advanced rule rendering", () => {
+    const onChangeEditingDescription = vi.fn();
+    const editingHandlers = props({
+      isEditing: true,
+      editingDescription: "Draft description",
+      onChangeEditingDescription,
+      isRulesExpanded: false,
+    });
+    renderToStaticMarkup(React.createElement(ProxyGroupsModuleCard, editingHandlers));
+
+    const descriptionInput = mocks.inputs.find(
+      (input) => input.placeholder === "描述文本（默认: 自定义代理组）",
+    );
+    expect(descriptionInput).toEqual(
+      expect.objectContaining({ value: "Draft description" }),
+    );
+    descriptionInput.onChange({ target: { value: "Updated description" } });
+    descriptionInput.onKeyDown({ key: "Enter" });
+    descriptionInput.onKeyDown({ key: "Escape" });
+    expect(onChangeEditingDescription).toHaveBeenCalledWith("Updated description");
+    expect(editingHandlers.onCommitEditing).toHaveBeenCalled();
+    expect(editingHandlers.onCancelEditing).toHaveBeenCalled();
+
+    mocks.inputs = [];
+    const onChangeEmptyDescription = vi.fn();
+    const emptyDescriptionHandlers = props({
+      isEditing: true,
+      onChangeEditingDescription: onChangeEmptyDescription,
+      isRulesExpanded: false,
+    });
+    renderToStaticMarkup(
+      React.createElement(ProxyGroupsModuleCard, emptyDescriptionHandlers),
+    );
+    expect(
+      mocks.inputs.find(
+        (input) => input.placeholder === "描述文本（默认: 自定义代理组）",
+      ).value,
+    ).toBe("");
+
+    const renderAdvancedContent = vi.fn((rulesContent, rulesCount) =>
+      React.createElement("section", null, "advanced-", rulesCount, rulesContent),
+    );
+    const html = renderToStaticMarkup(
+      React.createElement(
+        ProxyGroupsModuleCard,
+        props({
+          advancedMode: true,
+          renderAdvancedContent,
+          rulesContentOverride: React.createElement("span", null, "override rules"),
+          rulesCountOverride: 5,
+        })
+      )
+    );
+
+    expect(renderAdvancedContent).toHaveBeenCalledWith(expect.anything(), 5);
+    expect(html).toContain("advanced-5");
+    expect(html).toContain("override rules");
+  });
+
   it("renders google scholar hint and hides optional controls for core modules", () => {
     const html = renderToStaticMarkup(
       React.createElement(
@@ -205,6 +269,17 @@ describe("ProxyGroupsModuleCard", () => {
     expect(mocks.panels).toHaveLength(0);
   });
 
+  it("keeps the full module header as the disclosure control", () => {
+    const collapsedHandlers = props({ isRulesExpanded: false });
+    const collapsedHtml = renderToStaticMarkup(
+      React.createElement(ProxyGroupsModuleCard, collapsedHandlers),
+    );
+
+    expect(collapsedHtml).toContain('class="absolute inset-0');
+    expect(collapsedHtml).toContain('aria-label="展开 Gemini Display"');
+    expect(collapsedHtml).toContain('aria-expanded="false"');
+  });
+
   it("renders module summary with the requested description and rule colors", () => {
     const html = renderToStaticMarkup(
       React.createElement(
@@ -221,6 +296,33 @@ describe("ProxyGroupsModuleCard", () => {
     expect(html).toContain('text-emerald-300">3 规则');
     expect(html).not.toContain('title="手动选择代理节点');
     expect(html).not.toContain('title="3 规则');
+
+    const overrideHtml = renderToStaticMarkup(
+      React.createElement(
+        ProxyGroupsModuleCard,
+        props({
+          description: "Override description",
+          module: { ...baseModule, description: undefined as never },
+          display: { full: "Override" },
+        })
+      )
+    );
+    expect(overrideHtml).toContain("Override description");
+
+    const emptyDescriptionHtml = renderToStaticMarkup(
+      React.createElement(
+        ProxyGroupsModuleCard,
+        props({
+          extraRules: [],
+          manualRules: [],
+          module: { ...baseModule, description: undefined as never, rules: [] },
+          rulesContentOverride: null,
+          rulesCountOverride: 0,
+        })
+      )
+    );
+    expect(emptyDescriptionHtml).toContain("0 规则");
+    expect(emptyDescriptionHtml).not.toContain("AI description");
   });
 });
 

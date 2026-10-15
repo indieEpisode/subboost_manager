@@ -2,13 +2,24 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fetchSourceUserInfoHeadersDirect, importSourceUrlDirect } from "./source-import";
 
 const mocks = vi.hoisted(() => ({
+  getAllowUnsafeSubscriptionSources: vi.fn(),
   lookup: vi.fn(),
   importSubscriptionFromUrl: vi.fn(),
+  requestPinnedText: vi.fn(),
 }));
 
 vi.mock("node:dns/promises", () => ({
   lookup: mocks.lookup,
 }));
+
+vi.mock("@local/lib/source-import-settings", () => ({
+  getAllowUnsafeSubscriptionSources: mocks.getAllowUnsafeSubscriptionSources,
+}));
+
+vi.mock("./pinned-http", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./pinned-http")>();
+  return { ...actual, requestPinnedText: mocks.requestPinnedText };
+});
 
 vi.mock("@subboost/server-core/subscription", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@subboost/server-core/subscription")>();
@@ -20,6 +31,26 @@ vi.mock("@subboost/server-core/subscription", async (importOriginal) => {
 
 function response(body: string, init: ResponseInit = {}) {
   return new Response(body, init);
+}
+
+function dnsResponse(addresses: string[]): Response {
+  const question = new Uint8Array([
+    3, 97, 112, 105, 4, 100, 108, 101, 114, 2, 105, 111, 0, 0, 1, 0, 1,
+  ]);
+  const answers: number[] = [];
+  for (const address of addresses) {
+    answers.push(0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x04);
+    answers.push(...address.split(".").map((part) => Number(part)));
+  }
+  const out = new Uint8Array(12 + question.length + answers.length);
+  const view = new DataView(out.buffer);
+  view.setUint16(0, 0);
+  view.setUint16(2, 0x8180);
+  view.setUint16(4, 1);
+  view.setUint16(6, addresses.length);
+  out.set(question, 12);
+  out.set(answers, 12 + question.length);
+  return new Response(out, { status: 200 });
 }
 
 async function runTransport(url: string, overrides: Record<string, unknown> = {}) {
@@ -39,7 +70,9 @@ async function runTransport(url: string, overrides: Record<string, unknown> = {}
 describe("local source import transport", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.lookup.mockResolvedValue([{ address: "93.184.216.34" }]);
+    mocks.getAllowUnsafeSubscriptionSources.mockResolvedValue(false);
+    mocks.lookup.mockRejectedValue(new Error("dns unavailable"));
+    mocks.requestPinnedText.mockResolvedValue({ status: 200, headers: {}, content: "ss://node" });
     globalThis.fetch = vi.fn();
   });
 
@@ -86,6 +119,138 @@ describe("local source import transport", () => {
       publicReason: "禁止访问本机或内网地址",
     });
     expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("allows all local and reserved address sources when the high-risk setting is enabled", async () => {
+    mocks.getAllowUnsafeSubscriptionSources.mockResolvedValue(true);
+    const allowedUrls = [
+      "http://localhost:8080/sub",
+      "http://127.0.0.1/sub",
+      "http://[::1]/sub",
+      "http://router.local/sub",
+      "http://10.1.2.3/sub",
+      "http://169.254.169.254/latest/meta-data",
+      "http://100.64.0.1/sub",
+      "http://192.0.2.1/sub",
+      "http://198.18.0.1/sub",
+      "http://224.0.0.1/sub",
+      "http://[fc00::1]/sub",
+      "http://[fe80::1]/sub",
+      "http://[::ffff:192.168.0.1]/sub",
+    ];
+
+    for (const url of allowedUrls) {
+      vi.mocked(globalThis.fetch).mockResolvedValueOnce(response("ss://node", { status: 200 }));
+      await expect(runTransport(url)).resolves.toMatchObject({ ok: true, content: "ss://node" });
+    }
+    expect(mocks.lookup).not.toHaveBeenCalled();
+  });
+
+  it("keeps URL scheme and embedded-credential checks enabled for high-risk sources", async () => {
+    mocks.getAllowUnsafeSubscriptionSources.mockResolvedValue(true);
+    await expect(runTransport("ftp://127.0.0.1/sub")).resolves.toMatchObject({ ok: false });
+    await expect(runTransport("http://user:pass@127.0.0.1/sub")).resolves.toMatchObject({ ok: false });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("rechecks fake-ip DNS answers with DoH before fetching the subscription", async () => {
+    mocks.lookup.mockResolvedValueOnce([{ address: "198.18.3.6" }]);
+    vi.mocked(globalThis.fetch)
+      .mockResolvedValueOnce(dnsResponse(["93.184.216.34"]))
+      .mockResolvedValueOnce(dnsResponse([]));
+
+    await expect(runTransport("https://api.dler.io/sub")).resolves.toMatchObject({
+      ok: true,
+      content: "ss://node",
+    });
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(
+      1,
+      "https://doh.pub/dns-query",
+      expect.objectContaining({
+        method: "POST",
+        headers: {
+          Accept: "application/dns-message",
+          "Content-Type": "application/dns-message",
+        },
+        body: expect.any(ArrayBuffer),
+      })
+    );
+    expect(mocks.requestPinnedText).toHaveBeenCalledWith(expect.objectContaining({
+      url: "https://api.dler.io/sub",
+      addresses: ["93.184.216.34"],
+      method: "GET",
+    }));
+  });
+
+  it("pins ordinary successful DNS validation results into the connection", async () => {
+    mocks.lookup.mockResolvedValueOnce([{ address: "93.184.216.34" }]);
+
+    await expect(runTransport("https://example.com/sub")).resolves.toMatchObject({
+      ok: true,
+      content: "ss://node",
+    });
+
+    expect(mocks.requestPinnedText).toHaveBeenCalledWith(expect.objectContaining({
+      url: "https://example.com/sub",
+      addresses: ["93.184.216.34"],
+      maxBytes: 1024,
+    }));
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("revalidates and pins every redirect target independently", async () => {
+    mocks.lookup
+      .mockResolvedValueOnce([{ address: "93.184.216.34" }])
+      .mockResolvedValueOnce([{ address: "1.1.1.1" }]);
+    mocks.requestPinnedText
+      .mockResolvedValueOnce({
+        status: 302,
+        headers: { location: "https://cdn.example.net/sub" },
+        content: "",
+      })
+      .mockResolvedValueOnce({ status: 200, headers: {}, content: "ss://node" });
+
+    await expect(runTransport("https://example.com/sub")).resolves.toMatchObject({
+      ok: true,
+      content: "ss://node",
+    });
+
+    expect(mocks.requestPinnedText).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      url: "https://example.com/sub",
+      addresses: ["93.184.216.34"],
+    }));
+    expect(mocks.requestPinnedText).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      url: "https://cdn.example.net/sub",
+      addresses: ["1.1.1.1"],
+    }));
+  });
+
+  it("keeps blocking fake-ip DNS answers when DoH confirms an unsafe target", async () => {
+    mocks.lookup.mockResolvedValueOnce([{ address: "198.18.3.6" }]);
+    vi.mocked(globalThis.fetch)
+      .mockResolvedValueOnce(dnsResponse(["10.0.0.2"]))
+      .mockResolvedValueOnce(dnsResponse([]));
+
+    await expect(runTransport("https://fake-ip-private.example/sub")).resolves.toMatchObject({
+      ok: false,
+      publicReason: "禁止访问本机或内网地址",
+    });
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("lets the explicit high-risk setting bypass fake-ip DNS blocking", async () => {
+    mocks.getAllowUnsafeSubscriptionSources.mockResolvedValue(true);
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(response("ss://node", { status: 200 }));
+
+    await expect(runTransport("https://fake-ip-private.example/sub")).resolves.toMatchObject({
+      ok: true,
+      content: "ss://node",
+    });
+    expect(mocks.lookup).not.toHaveBeenCalled();
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "https://fake-ip-private.example/sub",
+      expect.objectContaining({ method: "GET", redirect: "manual" })
+    );
   });
 
   it("rejects additional private IPv4 and IPv6 address ranges", async () => {
@@ -211,7 +376,9 @@ describe("local source import transport", () => {
   });
 
   it("handles redirect loops, missing locations, and thrown fetch errors", async () => {
-    vi.mocked(globalThis.fetch).mockResolvedValue(response("", { status: 302, headers: { location: "/next" } }));
+    vi.mocked(globalThis.fetch).mockImplementation(async () => (
+      response("", { status: 302, headers: { location: "/next" } })
+    ));
     await expect(runTransport("https://example.com/loop")).resolves.toMatchObject({
       ok: false,
       publicReason: "HTTP 310",
@@ -238,6 +405,19 @@ describe("local source import transport", () => {
       ok: false,
       publicReason: "禁止访问本机或内网地址",
     });
+  });
+
+  it("applies the enabled high-risk setting to redirect targets", async () => {
+    mocks.getAllowUnsafeSubscriptionSources.mockResolvedValue(true);
+    vi.mocked(globalThis.fetch)
+      .mockResolvedValueOnce(response("", { status: 302, headers: { location: "http://127.0.0.1/sub" } }))
+      .mockResolvedValueOnce(response("ss://node", { status: 200 }));
+
+    await expect(runTransport("https://example.com/private-redirect")).resolves.toMatchObject({
+      ok: true,
+      content: "ss://node",
+    });
+    expect(mocks.getAllowUnsafeSubscriptionSources).toHaveBeenCalledTimes(1);
   });
 
   it("returns userinfo headers with HEAD and skips when no userinfo URL is configured", async () => {
@@ -275,5 +455,13 @@ describe("local source import transport", () => {
         headers: expect.objectContaining({ "User-Agent": expect.any(String) }),
       })
     );
+
+    mocks.getAllowUnsafeSubscriptionSources.mockResolvedValue(true);
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(
+      response("", { status: 200, headers: { "Subscription-Userinfo": "upload=2; total=4096" } })
+    );
+    await expect(fetchSourceUserInfoHeadersDirect({ userinfoUrl: "http://127.0.0.1/userinfo" })).resolves.toMatchObject({
+      "subscription-userinfo": "upload=2; total=4096",
+    });
   });
 });

@@ -44,6 +44,8 @@ vi.mock("react", async (importOriginal) => {
 
 vi.mock("next/link", () => ({ default: (props: any) => props.children }));
 vi.mock("lucide-react", () => ({
+  QrCode: () => null,
+  X: () => null,
   AlertTriangle: () => null,
   Check: () => null,
   Clock: () => null,
@@ -107,6 +109,7 @@ vi.mock("@subboost/ui/dashboard/subscription-settings-dialog", () => ({
 }));
 
 import { SubscriptionDashboardSurface, type DashboardSurfaceAdapter } from "./subscription-dashboard-surface";
+import { buildAutoUpdateDisabledNotice } from "./dashboard-auto-update-warning";
 
 const user = { id: "user-1", isAdmin: false, name: "Alice" };
 
@@ -126,6 +129,10 @@ const subscription = {
     failureSourceState: null,
     lastFailedAt: null,
     lastAttemptedAt: null,
+    nodeQuotaFailureCount: 0,
+    lastNodeQuotaExceededAt: null,
+    lastNodeQuotaActual: null,
+    lastNodeQuotaLimit: null,
     disabledAt: null,
     disabledReason: null,
     disabledPreviousInterval: null,
@@ -142,6 +149,32 @@ const disabledSubscription = {
     ...subscription.autoUpdateState,
     disabledAt: "2026-01-03T00:00:00.000Z",
     disabledReason: "fetch_failed",
+  },
+};
+
+const quotaWarningSubscription = {
+  ...subscription,
+  id: "sub-quota-warning",
+  autoUpdateState: {
+    ...subscription.autoUpdateState,
+    nodeQuotaFailureCount: 2,
+    lastNodeQuotaExceededAt: "2026-01-03T00:00:00.000Z",
+    lastNodeQuotaActual: 120,
+    lastNodeQuotaLimit: 100,
+  },
+};
+
+const quotaDisabledSubscription = {
+  ...quotaWarningSubscription,
+  id: "sub-quota-disabled",
+  name: "Quota Disabled",
+  autoUpdateInterval: null,
+  autoUpdateState: {
+    ...quotaWarningSubscription.autoUpdateState,
+    nodeQuotaFailureCount: 3,
+    disabledAt: "2026-01-04T00:00:00.000Z",
+    disabledReason: "节点数连续超过配额",
+    disabledPreviousInterval: 86400,
   },
 };
 
@@ -203,6 +236,7 @@ function stubDocumentActions() {
     style: {} as Record<string, string>,
     setAttribute: vi.fn(),
     select: vi.fn(),
+    setSelectionRange: vi.fn(),
     remove: vi.fn(),
   };
   const appendChild = vi.fn();
@@ -248,6 +282,7 @@ describe("SubscriptionDashboardSurface", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -262,6 +297,8 @@ describe("SubscriptionDashboardSurface", () => {
     mocks.userStore = { user, isLoading: false, fetchUser: vi.fn() };
     const { html } = renderSurface(createAdapter(), { 0: [], 1: false });
     expect(html).toContain("暂无订阅");
+    expect(html).not.toContain("完整订阅链接是持有者凭证");
+    expect(html).not.toContain("账号临时封禁");
     expect(html).toContain("announcement");
     expect(html).toContain("extra-action");
     expect(mocks.captures.stats).toEqual({ subscriptionCount: 0, user });
@@ -269,6 +306,7 @@ describe("SubscriptionDashboardSurface", () => {
   });
 
   it("runs mount effects, handles fetch failures, and shows disabled auto-update notices", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const adapter = createAdapter({ fetchSubscriptions: vi.fn(async () => [subscription]) });
     const mounted = renderSurface(adapter, {}, { runEffects: true });
     await flushPromises();
@@ -280,6 +318,7 @@ describe("SubscriptionDashboardSurface", () => {
     const failed = renderSurface(failingAdapter, {}, { runEffects: true });
     await flushPromises();
     expect(failed.setters[0]).toHaveBeenCalledWith([]);
+    expect(errorSpy).toHaveBeenCalledWith("Failed to fetch subscriptions:", expect.objectContaining({ message: "offline" }));
 
     renderSurface(adapter, { 0: [disabledSubscription], 1: false }, { runEffects: true });
     await flushPromises();
@@ -288,6 +327,39 @@ describe("SubscriptionDashboardSurface", () => {
       "2026-01-03T00:00:00.000Z:fetch_failed"
     );
     expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "自动更新已关闭", variant: "warning" }));
+
+    renderSurface(adapter, { 0: [quotaDisabledSubscription], 1: false }, { runEffects: true });
+    await flushPromises();
+    expect(mocks.toast).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        title: "自动更新已关闭",
+        description: expect.anything(),
+        variant: "warning",
+      })
+    );
+    expect(renderToStaticMarkup(mocks.toast.mock.calls.at(-1)?.[0].description)).toContain(
+      "请减少导入节点或订阅源，或提高节点额度"
+    );
+  });
+
+  it("renders persistent node quota warnings before and after automatic disablement", () => {
+    const warningHtml = renderSurface(createAdapter(), { 0: [quotaWarningSubscription], 1: false }).html;
+    expect(warningHtml).toContain("节点数超出配额：实际 120，额度 100（连续 2/3 次）");
+    expect(warningHtml).not.toContain("自动更新已关闭：订阅源连续拉取失败");
+
+    const disabledHtml = renderSurface(createAdapter(), { 0: [quotaDisabledSubscription], 1: false }).html;
+    expect(disabledHtml).toContain("节点数超出配额：实际 120，额度 100（连续 3/3 次），自动更新已关闭");
+    expect(disabledHtml).not.toContain("自动更新已关闭：节点数连续超过配额");
+  });
+
+  it("keeps quota and source-failure recovery guidance separate in a mixed disabled notice", () => {
+    const notice = buildAutoUpdateDisabledNotice([disabledSubscription, quotaDisabledSubscription]);
+
+    expect(notice.title).toBe("2 个订阅的自动更新已关闭");
+    expect(notice.description).toContain("1 个订阅因节点数连续超过配额而关闭自动更新");
+    expect(notice.description).toContain("1 个订阅因订阅源连续拉取失败而关闭自动更新");
+    expect(notice.description).toContain("节点超额：节点数超出配额：实际 120，额度 100（连续 3/3 次）");
+    expect(notice.description).toContain("订阅源失败：当前可用配置仍会保留；请检查订阅 URL");
   });
 
   it("copies, deletes, refreshes, and opens settings for subscriptions", async () => {
@@ -338,6 +410,7 @@ describe("SubscriptionDashboardSurface", () => {
     expect(dom.createElement).toHaveBeenCalledWith("textarea");
     expect(dom.textarea.value).toBe("https://example.com/sub");
     expect(dom.textarea.select).toHaveBeenCalled();
+    expect(dom.textarea.setSelectionRange).toHaveBeenCalledWith(0, dom.textarea.value.length);
     expect(dom.execCommand).toHaveBeenCalledWith("copy");
     expect(dom.textarea.remove).toHaveBeenCalled();
     expect(setters[2]).toHaveBeenCalledWith("sub-1");
@@ -372,6 +445,7 @@ describe("SubscriptionDashboardSurface", () => {
   });
 
   it("reports download failures without opening the subscription URL", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const dom = stubDocumentActions();
     vi.stubGlobal("fetch", vi.fn(async () => {
       throw new Error("cors");
@@ -386,6 +460,10 @@ describe("SubscriptionDashboardSurface", () => {
       title: "下载失败",
       variant: "destructive",
     }));
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Failed to fetch subscription YAML for download:",
+      expect.objectContaining({ message: "cors" })
+    );
   });
 
   it("uses the adapter download URL resolver before fetching subscription YAML", async () => {
@@ -418,6 +496,7 @@ describe("SubscriptionDashboardSurface", () => {
   });
 
   it("guards cancelled delete and in-flight refresh failures", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const adapter = createAdapter({ refreshSubscription: vi.fn(async () => { throw new Error("refresh failed"); }) });
     renderSurface(adapter, { 0: [subscription], 1: false, 2: null, 3: "sub-1" });
     mocks.captures.buttons.find((props: any) => props.title === "重新生成配置并刷新缓存").onClick();
@@ -445,9 +524,19 @@ describe("SubscriptionDashboardSurface", () => {
     mocks.captures.buttons.find((props: any) => props.className?.includes("text-red-400")).onClick();
     await flushPromises();
     expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "删除失败，请稍后重试", variant: "destructive" }));
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Failed to refresh subscription:",
+      expect.objectContaining({ message: "refresh failed" })
+    );
+    expect(errorSpy).toHaveBeenCalledWith("Failed to refresh subscription:", "bad");
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Failed to delete subscription:",
+      expect.objectContaining({ message: "delete failed" })
+    );
   });
 
   it("validates and saves subscription settings", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const adapter = createAdapter();
     renderSurface(adapter, { 0: [subscription], 1: false, 4: true, 5: subscription, 6: "  ", 7: true, 8: true, 9: 24, 10: false });
     await mocks.captures.settingsDialog.onSave();
@@ -475,6 +564,36 @@ describe("SubscriptionDashboardSurface", () => {
     expect(stateMock.setters[0]).toHaveBeenCalledWith(expect.any(Function));
     expect(stateMock.setters[4]).toHaveBeenCalledWith(false);
 
+    renderSurface(adapter, {
+      0: [quotaWarningSubscription],
+      1: false,
+      4: true,
+      5: quotaWarningSubscription,
+      6: "Quota warning",
+      7: true,
+      8: true,
+      9: 24,
+      10: false,
+    });
+    await mocks.captures.settingsDialog.onSave();
+    expect((stateMock.setters[0] as any).lastValue[0].autoUpdateState).toEqual(
+      quotaWarningSubscription.autoUpdateState
+    );
+
+    renderSurface(adapter, {
+      0: [disabledSubscription],
+      1: false,
+      4: true,
+      5: disabledSubscription,
+      6: "Re-enabled",
+      7: true,
+      8: true,
+      9: 24,
+      10: false,
+    });
+    await mocks.captures.settingsDialog.onSave();
+    expect((stateMock.setters[0] as any).lastValue[0].autoUpdateState).toEqual(subscription.autoUpdateState);
+
     renderSurface(adapter, { 0: [subscription], 1: false, 4: true, 5: subscription, 6: "Manual", 7: true, 8: false, 9: 24, 10: false });
     await mocks.captures.settingsDialog.onSave();
     expect(adapter.updateSubscriptionSettings).toHaveBeenCalledWith("sub-1", {
@@ -494,5 +613,9 @@ describe("SubscriptionDashboardSurface", () => {
     renderSurface(failingAdapter, { 0: [subscription], 1: false, 4: true, 5: subscription, 6: "Renamed", 7: true, 8: false, 9: 24, 10: false });
     await mocks.captures.settingsDialog.onSave();
     expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "save failed", variant: "destructive" }));
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Failed to save subscription settings:",
+      expect.objectContaining({ message: "save failed" })
+    );
   });
 });

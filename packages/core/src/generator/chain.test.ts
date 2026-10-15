@@ -6,7 +6,6 @@ import {
   generateDialerProxyGroups,
   getDialerRelayNodes,
   getDialerTargetNodes,
-  suggestDialerGroups,
   validateDialerConfig,
 } from "./chain";
 
@@ -33,7 +32,7 @@ function dialerGroup(patch: Partial<DialerProxyGroup> = {}): DialerProxyGroup {
 }
 
 describe("dialer proxy chain helpers", () => {
-  it("generates select and url-test dialer groups with provider use lists", () => {
+  it("generates typed dialer groups with shared proxy group fields", () => {
     expect(
       generateDialerProxyGroups(
         [
@@ -43,6 +42,37 @@ describe("dialer proxy chain helpers", () => {
             name: "Auto Relay",
             type: "url-test",
             relayNodes: ["Relay B"],
+          }),
+          dialerGroup({
+            id: "fallback-relay",
+            name: "Fallback Relay",
+            type: "fallback",
+            relayNodes: ["Relay C"],
+          }),
+          dialerGroup({
+            id: "balance-relay",
+            name: "Balance Relay",
+            type: "load-balance",
+            strategy: "round-robin",
+            relayNodes: ["Relay D"],
+          }),
+          dialerGroup({
+            id: "direct-relay",
+            name: "Direct Relay",
+            type: "direct-first",
+            relayNodes: ["DIRECT", "Relay E"],
+          }),
+          dialerGroup({
+            id: "reject-relay",
+            name: "Reject Relay",
+            type: "reject-first",
+            relayNodes: ["Relay F"],
+          }),
+          dialerGroup({
+            id: "direct-empty",
+            name: "Direct Empty",
+            type: "direct-first",
+            relayNodes: [],
           }),
           dialerGroup({ id: "empty", name: "Empty", relayNodes: [] }),
         ],
@@ -65,6 +95,41 @@ describe("dialer proxy chain helpers", () => {
         url: "https://probe.example.com/204",
         interval: 120,
         lazy: true,
+      },
+      {
+        name: "Fallback Relay",
+        type: "fallback",
+        proxies: ["Relay C"],
+        use: ["provider-a", "provider-b"],
+        url: "https://probe.example.com/204",
+        interval: 120,
+      },
+      {
+        name: "Balance Relay",
+        type: "load-balance",
+        proxies: ["Relay D"],
+        use: ["provider-a", "provider-b"],
+        url: "https://probe.example.com/204",
+        interval: 120,
+        strategy: "round-robin",
+      },
+      {
+        name: "Direct Relay",
+        type: "select",
+        proxies: ["DIRECT", "Relay E"],
+        use: ["provider-a", "provider-b"],
+      },
+      {
+        name: "Reject Relay",
+        type: "select",
+        proxies: ["REJECT", "Relay F"],
+        use: ["provider-a", "provider-b"],
+      },
+      {
+        name: "Direct Empty",
+        type: "select",
+        proxies: ["DIRECT"],
+        use: ["provider-a", "provider-b"],
       },
     ]);
   });
@@ -118,25 +183,4 @@ describe("dialer proxy chain helpers", () => {
     });
   });
 
-  it("suggests regional relay groups from node names", () => {
-    const suggestions = suggestDialerGroups([
-      node("US Los Angeles 01"),
-      node("美国 New York 02"),
-      node("香港 HK 01"),
-      node("Unknown 01"),
-    ]);
-
-    expect(suggestions).toEqual([
-      {
-        name: "🇺🇸 美国中转",
-        relayNodes: ["US Los Angeles 01", "美国 New York 02"],
-        description: "使用美国节点作为中转",
-      },
-      {
-        name: "🇭🇰 香港中转",
-        relayNodes: ["香港 HK 01"],
-        description: "使用香港节点作为中转",
-      },
-    ]);
-  });
 });

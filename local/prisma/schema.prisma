@@ -28,6 +28,7 @@ model LocalAdmin {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
   lastLoginAt  DateTime?
+  allowUnsafeSubscriptionSources Boolean @default(false)
 
   subscriptions Subscription[]
   templates      LocalTemplate[]
@@ -52,7 +53,7 @@ model Subscription {
   id                            String    @id @default(cuid())
   ownerId                       String
   name                          String
-  token                         String    @unique @default(cuid())
+  token                         String    @unique
   isPrimary                     Boolean   @default(false)
   encryptedUrls                 String    @db.Text
   encryptedNodes                String    @db.Text
@@ -90,6 +91,10 @@ model SubscriptionAutoUpdateState {
   failureSourceState       String?   @db.Text
   lastFailedAt             DateTime?
   lastAttemptedAt          DateTime?
+  nodeQuotaFailureCount    Int       @default(0)
+  lastNodeQuotaExceededAt  DateTime?
+  lastNodeQuotaActual      Int?
+  lastNodeQuotaLimit       Int?
   disabledAt               DateTime?
   disabledReason           String?
   disabledPreviousInterval Int?
@@ -107,4 +112,21 @@ model LocalSetting {
   forceRefreshMinIntervalSeconds Int      @default(600)
   createdAt                      DateTime @default(now())
   updatedAt                      DateTime @updatedAt
+}
+
+model JobLeaseLock {
+  name       String   @id
+  ownerToken String
+  expiresAt  DateTime
+  updatedAt  DateTime @updatedAt
+
+  @@index([expiresAt])
+}
+
+model RevokedSession {
+  revocationKey String   @id
+  expiresAt     DateTime
+  createdAt     DateTime @default(now())
+
+  @@index([expiresAt])
 }

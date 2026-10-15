@@ -4,16 +4,23 @@ import * as React from "react";
 import type { SubscriptionSource } from "@subboost/ui/store/config-store";
 import type { ParsedNode } from "@subboost/core/types/node";
 import type { EditingSubscriptionLoaderOptions } from "./editing-subscription-types";
-import { hasFullRuleOrderKeys, normalizePersistedRuleOrder } from "@subboost/core/generator/rules";
-import { normalizeModuleRuleExclusions } from "@subboost/core/generator/module-rules";
+import { normalizePersistedRuleOrder } from "@subboost/core/generator/rules";
 import { ensureCustomRulesHaveIds } from "@subboost/core/rules/custom-rule-utils";
+import { normalizeRuleModelFromConfig } from "@subboost/core/rules/rule-model";
+import { resolveProxyGroupAdvancedModeEnabled } from "@subboost/core/proxy-group-advanced-mode";
+import { normalizeProxyGroupAdvancedConfig } from "@subboost/core/proxy-group-advanced";
 import { tryNormalizeSubscriptionUrlInput } from "@subboost/core/subscription/url-input";
 import {
   hasSubscriptionUserInfo,
   normalizeSubscriptionUserInfo,
   type SubscriptionUserInfo,
 } from "@subboost/core/subscription/subscription-userinfo";
+import {
+  normalizeNodeNameFilterConfig,
+  type NodeNameFilterConfig,
+} from "@subboost/core/subscription/node-name-filter";
 import { useConfigStore } from "@subboost/ui/store/config-store";
+import { initialState } from "@subboost/ui/store/config-store/definitions";
 import { captureAuthConfigHandoff } from "@subboost/ui/store/config-store/auth-handoff";
 import { toast } from "@subboost/ui/components/ui/toaster";
 import {
@@ -25,6 +32,8 @@ import {
 
 export function useEditingSubscriptionLoader({
   editSubscriptionId,
+  userId,
+  authChecked = true,
   loadSubscription,
   loginHref = "/login",
   setCopied,
@@ -34,12 +43,29 @@ export function useEditingSubscriptionLoader({
   setSubscriptionUrl,
 }: EditingSubscriptionLoaderOptions): boolean {
   const [isLoadingEditingSubscription, setIsLoadingEditingSubscription] = React.useState(false);
+  const previousEditId = React.useRef<string | null>(null);
 
   // 从“我的订阅”跳转回来时，加载订阅详情到首页编辑器
   React.useEffect(() => {
-    if (!editSubscriptionId) return;
+    if (!editSubscriptionId) {
+      if (previousEditId.current) {
+        useConfigStore.getState().reset();
+        useConfigStore.getState().generateConfig();
+        setEditingSubscription(null);
+        setSubscriptionName("");
+        setSubscriptionUrl("");
+        setCopied(false);
+      }
+      previousEditId.current = null;
+      setIsLoadingEditingSubscription(false);
+      return;
+    }
+    if (!authChecked) return;
+    previousEditId.current = editSubscriptionId;
 
     let cancelled = false;
+    let revision = useConfigStore.getState().draftRevision;
+    const isCurrent = () => !cancelled && useConfigStore.getState().draftRevision === revision;
     const run = async () => {
       setIsLoadingEditingSubscription(true);
       try {
@@ -47,6 +73,7 @@ export function useEditingSubscriptionLoader({
           throw new Error("当前应用未配置订阅加载接口");
         }
         const res = await loadSubscription(editSubscriptionId);
+        if (!isCurrent()) return;
         if (res.status === 401) {
           captureAuthConfigHandoff(useConfigStore.getState());
           window.location.href = loginHref;
@@ -54,6 +81,7 @@ export function useEditingSubscriptionLoader({
         }
 
         const data = (await res.json()) as unknown;
+        if (!isCurrent()) return;
         if (!res.ok) {
           const err = (data as { error?: string })?.error || "加载订阅失败";
           throw new Error(err);
@@ -289,62 +317,10 @@ export function useEditingSubscriptionLoader({
             })
             : [];
 
-        // 订阅记录未保存 sources 时，尽量保留用户当前页面里的非 URL 输入（若 URL 列表完全一致）。
-        const rebuiltSourcesFromCurrent = (() => {
-          const current = useConfigStore.getState().sources as SubscriptionSource[];
-          if (!Array.isArray(current) || current.length === 0) return [];
-
-          const currentUrls = current
-            .filter((s) => s.type === "url")
-            .map((s) =>
-              typeof s.content === "string" ? (tryNormalizeSubscriptionUrlInput(s.content) ?? s.content.trim()) : ""
-            )
-            .filter(Boolean);
-
-          const hasNonUrlContent = current.some((s) => s.type !== "url" && typeof s.content === "string" && s.content.trim());
-          const sameOrder = currentUrls.length === normalizedUrls.length && currentUrls.every((v, i) => v === normalizedUrls[i]);
-          if (!hasNonUrlContent || !sameOrder) return [];
-
-          return current.map((s) => {
-            const subscriptionUserInfo = normalizeSubscriptionUserInfo(s.subscriptionUserInfo);
-            return {
-              id: s.id,
-              type: s.type,
-              content: s.type === "url" ? (tryNormalizeSubscriptionUrlInput(s.content) ?? s.content.trim()) : s.content,
-              ...(typeof s.tag === "string" && s.tag.trim() ? { tag: s.tag.trim() } : {}),
-              ...(typeof s.nameTemplate === "string" && s.nameTemplate.trim() ? { nameTemplate: s.nameTemplate.trim() } : {}),
-              ...(hasSubscriptionUserInfo(subscriptionUserInfo) ? { subscriptionUserInfo } : {}),
-              ...(s.type === "url" && s.useProxyProviders ? { useProxyProviders: true } : {}),
-              ...(s.type === "url" && typeof s.userinfoUrl === "string" && s.userinfoUrl.trim()
-                ? { userinfoUrl: tryNormalizeSubscriptionUrlInput(s.userinfoUrl) ?? s.userinfoUrl.trim() }
-                : {}),
-              ...(s.type === "url" && typeof s.userinfoUserAgent === "string" && s.userinfoUserAgent.trim()
-                ? { userinfoUserAgent: s.userinfoUserAgent.trim() }
-                : {}),
-              ...(typeof s.lastParsedTag === "string" && s.lastParsedTag.trim() ? { lastParsedTag: s.lastParsedTag.trim() } : {}),
-              ...(typeof s.lastParsedNameTemplate === "string" && s.lastParsedNameTemplate.trim()
-                ? { lastParsedNameTemplate: s.lastParsedNameTemplate.trim() }
-                : {}),
-              ...(typeof s.lastParsedContent === "string" && s.lastParsedContent.trim()
-                ? {
-                    lastParsedContent:
-                      s.type === "url"
-                        ? (tryNormalizeSubscriptionUrlInput(s.lastParsedContent) ?? s.lastParsedContent.trim())
-                        : s.lastParsedContent.trim(),
-                  }
-                : s.type === "url" && typeof s.content === "string" && s.content.trim()
-                  ? { lastParsedContent: s.content.trim() }
-                  : {}),
-            };
-          });
-        })();
-
         const rebuiltSourcesBase: SubscriptionSource[] =
           rebuiltSourcesFromCfg.length > 0
             ? rebuiltSourcesFromCfg
-            : rebuiltSourcesFromCurrent.length > 0
-              ? rebuiltSourcesFromCurrent
-              : rebuiltSourcesFromUrls;
+            : rebuiltSourcesFromUrls;
         const rebuiltSources = (() => {
           if (!hasSubscriptionInfoFromRecord) return rebuiltSourcesBase;
           const urlSources = rebuiltSourcesBase.filter((s) => s.type === "url");
@@ -411,18 +387,18 @@ export function useEditingSubscriptionLoader({
           : [];
         const hiddenProxyGroupSetFromCfg = new Set(hiddenProxyGroupsFromCfg);
         const customRulesFromCfg = ensureCustomRulesHaveIds(Array.isArray(cfg.customRules) ? (cfg.customRules as any[]) : []);
-        const customProxyGroupsFromCfg = Array.isArray(cfg.customProxyGroups) ? (cfg.customProxyGroups as any[]) : [];
-        const filteredProxyGroupsFromCfg = Array.isArray((cfg as any).filteredProxyGroups)
-          ? (((cfg as any).filteredProxyGroups as unknown[]) as any[])
-          : [];
-        const moduleRuleOverridesFromCfg =
-          cfg.moduleRuleOverrides && typeof cfg.moduleRuleOverrides === "object"
-            ? (cfg.moduleRuleOverrides as Record<string, unknown>)
-            : null;
-        const moduleRuleExclusionsFromCfg =
-          cfg.moduleRuleExclusions && typeof cfg.moduleRuleExclusions === "object"
-            ? normalizeModuleRuleExclusions(cfg.moduleRuleExclusions)
-            : null;
+        const ruleModelFromCfg = normalizeRuleModelFromConfig(cfg);
+        const customProxyGroupsFromCfg = ruleModelFromCfg.customProxyGroups;
+        const customRuleSetsFromCfg = ruleModelFromCfg.customRuleSets;
+        const builtinRuleEditsFromCfg = ruleModelFromCfg.builtinRuleEdits;
+        const proxyGroupAdvancedFromCfg =
+          cfg.proxyGroupAdvanced && typeof cfg.proxyGroupAdvanced === "object" && !Array.isArray(cfg.proxyGroupAdvanced)
+            ? Object.fromEntries(
+                Object.entries(cfg.proxyGroupAdvanced as Record<string, unknown>)
+                  .map(([id, value]) => [id.trim(), normalizeProxyGroupAdvancedConfig(value)] as const)
+                  .filter(([id, advanced]) => id && Object.keys(advanced).length > 0),
+              )
+            : {};
         const dialerProxyGroupsFromCfg = Array.isArray(cfg.dialerProxyGroups) ? (cfg.dialerProxyGroups as any[]) : [];
         const proxyGroupNameOverridesFromCfg =
           cfg.proxyGroupNameOverrides && typeof cfg.proxyGroupNameOverrides === "object"
@@ -442,61 +418,32 @@ export function useEditingSubscriptionLoader({
               return out;
             })()
           : null;
-        const normalizedModuleRuleOverridesFromCfg = (() => {
-          if (!moduleRuleOverridesFromCfg) return null;
-          const out: Record<string, any[]> = {};
-          for (const [moduleId, rules] of Object.entries(moduleRuleOverridesFromCfg)) {
-            if (!Array.isArray(rules)) continue;
-            const normalized = (rules as any[])
-              .map((r) => {
-                if (!r || typeof r !== "object") return null;
-                const id = (r as any).id;
-                const path = (r as any).path;
-                if (typeof id !== "string" || !id.trim()) return null;
-                if (typeof path !== "string" || !path.trim()) return null;
-                return {
-                  id: id.trim(),
-                  name: typeof (r as any).name === "string" && (r as any).name.trim() ? (r as any).name.trim() : id.trim(),
-                  behavior: (r as any).behavior === "ipcidr" ? "ipcidr" : "domain",
-                  path: path.trim(),
-                  ...((r as any).noResolve ? { noResolve: true } : {}),
-                };
-              })
-              .filter(Boolean) as any[];
-            if (normalized.length > 0) out[moduleId] = normalized;
-          }
-          return out;
-        })();
-        const nextEnabledModules = (enabledGroupsFromCfg ?? useConfigStore.getState().enabledProxyGroups).filter(
+        const nextEnabledModules = (enabledGroupsFromCfg ?? initialState.enabledProxyGroups).filter(
           (moduleId) => !hiddenProxyGroupSetFromCfg.has(moduleId)
         );
         const ruleOrderFromCfg = normalizePersistedRuleOrder({
           enabledModules: nextEnabledModules,
           customRules: customRulesFromCfg,
-          customProxyGroups: customProxyGroupsFromCfg as any,
-          moduleRuleOverrides: normalizedModuleRuleOverridesFromCfg ?? useConfigStore.getState().moduleRuleOverrides,
-          moduleRuleExclusions: moduleRuleExclusionsFromCfg ?? useConfigStore.getState().moduleRuleExclusions,
+          customProxyGroups: customProxyGroupsFromCfg,
+          customRuleSets: customRuleSetsFromCfg,
+          builtinRuleEdits: builtinRuleEditsFromCfg,
           proxyGroupNameOverrides: proxyGroupNameOverridesFromCfg
             ? Object.fromEntries(
                 Object.entries(proxyGroupNameOverridesFromCfg)
                   .filter(([, v]) => typeof v === "string")
                   .map(([k, v]) => [k, v as string])
               ) as Record<string, string>
-            : useConfigStore.getState().proxyGroupNameOverrides,
+            : initialState.proxyGroupNameOverrides,
           experimentalCnUseCnRuleSet:
             typeof (cfg as any).experimentalCnUseCnRuleSet === "boolean"
               ? Boolean((cfg as any).experimentalCnUseCnRuleSet)
-              : useConfigStore.getState().experimentalCnUseCnRuleSet,
+              : initialState.experimentalCnUseCnRuleSet,
           cnIpNoResolve:
             typeof (cfg as any).cnIpNoResolve === "boolean"
               ? Boolean((cfg as any).cnIpNoResolve)
-              : useConfigStore.getState().cnIpNoResolve,
+              : initialState.cnIpNoResolve,
           ruleOrder: Array.isArray((cfg as any).ruleOrder) ? ((cfg as any).ruleOrder as string[]) : [],
         });
-        const allRulesOrderEditingEnabledFromCfg =
-          typeof (cfg as any).allRulesOrderEditingEnabled === "boolean"
-            ? Boolean((cfg as any).allRulesOrderEditingEnabled)
-            : hasFullRuleOrderKeys(ruleOrderFromCfg);
         const listenerPortsFromCfg = (() => {
           const raw = (cfg as any).listenerPorts;
           if (!raw || typeof raw !== "object") return {};
@@ -510,13 +457,50 @@ export function useEditingSubscriptionLoader({
           }
           return out;
         })();
+        const groupListenersFromCfg = (() => {
+          const raw = (cfg as any).groupListeners;
+          if (!Array.isArray(raw)) return [];
+          const out: Array<{ id: string; target: { kind: "module" | "custom" | "dialer"; id: string }; port: number; enabled?: false; allowLan?: true }> = [];
+          const usedTargets = new Set<string>();
+          for (let index = 0; index < raw.length; index += 1) {
+            const item = raw[index];
+            if (!item || typeof item !== "object") continue;
+            const target = (item as any).target;
+            if (!target || typeof target !== "object") continue;
+            const kind = target.kind;
+            if (kind !== "module" && kind !== "custom" && kind !== "dialer") continue;
+            const targetId = typeof target.id === "string" ? target.id.trim() : "";
+            if (!targetId) continue;
+            const port = (item as any).port;
+            if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) continue;
+            const targetKey = `${kind}:${targetId}`;
+            if (usedTargets.has(targetKey)) continue;
+            usedTargets.add(targetKey);
+            out.push({
+              id: typeof (item as any).id === "string" && (item as any).id.trim() ? (item as any).id.trim() : `group_listener_${index + 1}`,
+              target: { kind, id: targetId },
+              port,
+              ...((item as any).enabled === false ? { enabled: false as const } : {}),
+              ...((item as any).allowLan === true ? { allowLan: true as const } : {}),
+            });
+          }
+          return out;
+        })();
         const appliedTemplateIdFromCfg =
           typeof cfg.appliedTemplateId === "string" && cfg.appliedTemplateId.trim()
             ? (cfg.appliedTemplateId as string)
             : null;
+        const nodeNameFilterFromCfg: NodeNameFilterConfig =
+          normalizeNodeNameFilterConfig(cfg.nodeNameFilter);
+        const proxyGroupAdvancedModeEnabledFromCfg = resolveProxyGroupAdvancedModeEnabled({
+          proxyGroupAdvancedModeEnabled: (cfg as any).proxyGroupAdvancedModeEnabled,
+          customProxyGroups: customProxyGroupsFromCfg,
+          proxyGroupAdvanced: proxyGroupAdvancedFromCfg,
+        });
 
         // 重置后批量写入，避免中间状态触发重复生成
         useConfigStore.getState().reset();
+        revision = useConfigStore.getState().draftRevision;
 
         if (rebuiltSourcesWithStatus.length > 0) {
           setStoreSources(rebuiltSourcesWithStatus);
@@ -538,14 +522,14 @@ export function useEditingSubscriptionLoader({
           hiddenProxyGroups: hiddenProxyGroupsFromCfg,
           customRules: customRulesFromCfg as any,
           customProxyGroups: customProxyGroupsFromCfg as any,
-          filteredProxyGroups: filteredProxyGroupsFromCfg as any,
-          moduleRuleOverrides: normalizedModuleRuleOverridesFromCfg ?? state.moduleRuleOverrides,
-          moduleRuleExclusions: moduleRuleExclusionsFromCfg ?? state.moduleRuleExclusions,
+          customRuleSets: customRuleSetsFromCfg,
+          builtinRuleEdits: builtinRuleEditsFromCfg,
+          proxyGroupAdvanced: proxyGroupAdvancedFromCfg,
+          proxyGroupAdvancedModeEnabled: proxyGroupAdvancedModeEnabledFromCfg,
           moduleRuleEditWarningAccepted:
             typeof (cfg as any).moduleRuleEditWarningAccepted === "boolean"
               ? Boolean((cfg as any).moduleRuleEditWarningAccepted)
               : state.moduleRuleEditWarningAccepted,
-          allRulesOrderEditingEnabled: allRulesOrderEditingEnabledFromCfg,
           dialerProxyGroups: dialerProxyGroupsFromCfg as any,
           proxyGroupNameOverrides: proxyGroupNameOverridesFromCfg
             ? Object.fromEntries(
@@ -557,7 +541,9 @@ export function useEditingSubscriptionLoader({
           proxyGroupOrder: proxyGroupOrderFromCfg ? proxyGroupOrderFromCfg : state.proxyGroupOrder,
           ruleOrder: ruleOrderFromCfg.length > 0 ? ruleOrderFromCfg : state.ruleOrder,
           listenerPorts: listenerPortsFromCfg,
+          groupListeners: groupListenersFromCfg,
           appliedTemplateId: appliedTemplateIdFromCfg ?? state.appliedTemplateId,
+          nodeNameFilter: nodeNameFilterFromCfg,
           dnsYaml: typeof cfg.dnsYaml === "string" ? (cfg.dnsYaml as string) : state.dnsYaml,
           ruleProviderBaseUrl:
             typeof cfg.ruleProviderBaseUrl === "string" ? (cfg.ruleProviderBaseUrl as string) : state.ruleProviderBaseUrl,
@@ -596,7 +582,7 @@ export function useEditingSubscriptionLoader({
     };
 
     run().catch((e) => {
-      if (!cancelled) {
+      if (isCurrent()) {
         console.error(e);
         toast({
           title: e instanceof Error ? e.message : "加载订阅失败",
@@ -609,7 +595,7 @@ export function useEditingSubscriptionLoader({
     return () => {
       cancelled = true;
     };
-  }, [editSubscriptionId, loadSubscription, loginHref, setCopied, setEditingSubscription, setStoreSources, setSubscriptionName, setSubscriptionUrl]);
+  }, [authChecked, userId, editSubscriptionId, loadSubscription, loginHref, setCopied, setEditingSubscription, setStoreSources, setSubscriptionName, setSubscriptionUrl]);
 
   return isLoadingEditingSubscription;
 }

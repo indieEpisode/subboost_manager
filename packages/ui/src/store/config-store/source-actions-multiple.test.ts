@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { resolveNodeNameFilter } from "@subboost/core/subscription/node-name-filter";
 import type { ParsedNode } from "@subboost/core/types/node";
 import type { SubscriptionSource } from "./definitions";
 import {
@@ -12,6 +13,20 @@ import {
 } from "./source-actions.test-utils";
 
 const mocks = getSourceActionMocks();
+
+type DeferredFetchResult = {
+  content: string;
+  headers: Record<string, string>;
+  parseResult: ReturnType<typeof parseResult>;
+};
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 describe("createSourceActions parseMultipleSources", () => {
   beforeEach(resetSourceActionMocks);
@@ -33,12 +48,23 @@ describe("createSourceActions parseMultipleSources", () => {
       source({ id: "yaml", type: "yaml", content: "proxies: []", tag: "Y" }),
       source({ id: "empty", type: "nodes", content: "   " }),
     ];
-    const { actions, getState } = createHarness({ sources });
+    const { actions, getState } = createHarness({
+      sources,
+      nodeNameFilter: { enabled: true, excludeRegexes: ["remote|yaml"] },
+    });
 
     await actions.parseMultipleSources(sources);
 
     expect(getState().isLoading).toBe(false);
     expect(getState().nodes.map((item: ParsedNode) => item.name)).toEqual(["[U]Remote", "[Y]Yaml"]);
+    expect(
+      resolveNodeNameFilter(getState().nodes, getState().nodeNameFilter)
+        .effectiveNodes
+    ).toEqual([]);
+    expect(getState().nodeNameFilter).toEqual({
+      enabled: true,
+      excludeRegexes: ["remote|yaml"],
+    });
     expect(getState().parseErrors).toEqual([
       "源 #3 获取失败: fetch failed",
       "源 #4: yaml warning",
@@ -207,7 +233,31 @@ describe("createSourceActions parseMultipleSources", () => {
     });
   });
 
+  it("ignores non-numeric URL userinfo and keeps raw URL content when normalization fails", async () => {
+    mocks.fetchUrlContentInBrowser.mockResolvedValueOnce({
+      content: "ss://remote",
+      headers: {
+        "subscription-userinfo": "upload=bad; expire=never",
+      },
+    });
+    mocks.parseSubscription.mockReturnValueOnce(parseResult([node("Remote")]));
+    const sources = [source({ id: "url-ok", type: "url", content: "not a url" })];
+    const { actions, getState } = createHarness({ sources });
+
+    await actions.parseMultipleSources(sources);
+
+    expect(getState().nodes).toEqual([
+      expect.objectContaining({ name: "Remote", _originName: "Remote", _sourceIds: ["url-ok"] }),
+    ]);
+    expect(getState().sources[0]).toMatchObject({
+      parsed: true,
+      subscriptionUserInfo: undefined,
+      lastParsedContent: "not a url",
+    });
+  });
+
   it("merges duplicate parsed nodes and prunes stale listener ports and dialer nodes", async () => {
+    const migratedCustomGroupName = "🧩 筛选组  美国";
     const duplicate = node("Duplicate", {
       server: "same.example.com",
       _originName: "Duplicate",
@@ -221,6 +271,12 @@ describe("createSourceActions parseMultipleSources", () => {
     ];
     const { actions, getState } = createHarness({
       sources,
+      enabledProxyGroups: ["auto"],
+      customProxyGroups: [
+        { id: "legacy-us", name: migratedCustomGroupName, emoji: "🧩", enabled: true, groupType: "select" },
+        { id: "disabled", name: "🧩 已停用", emoji: "🧩", enabled: false, groupType: "select" },
+      ],
+      proxyGroupNameOverrides: { auto: "自定义自动" },
       listenerPorts: {
         Duplicate: 41000,
         Stale: 41001,
@@ -230,8 +286,15 @@ describe("createSourceActions parseMultipleSources", () => {
           id: "dialer-1",
           name: "Relay",
           type: "select",
-          relayNodes: ["Duplicate", "DIRECT", "Stale"],
-          targetNodes: ["Duplicate", "Stale"],
+          relayNodes: [
+            `  ${migratedCustomGroupName}  `,
+            "⚡ 自定义自动",
+            "Duplicate",
+            "DIRECT",
+            "Stale",
+            "🧩 已停用",
+          ],
+          targetNodes: [migratedCustomGroupName, "⚡ 自定义自动", "Duplicate", "Stale"],
         },
       ],
     });
@@ -246,7 +309,7 @@ describe("createSourceActions parseMultipleSources", () => {
     });
     expect(getState().listenerPorts).toEqual({ Duplicate: 41000 });
     expect(getState().dialerProxyGroups[0]).toMatchObject({
-      relayNodes: ["Duplicate", "DIRECT"],
+      relayNodes: [migratedCustomGroupName, "⚡ 自定义自动", "Duplicate", "DIRECT"],
       targetNodes: ["Duplicate"],
     });
     expect(getState().parseErrors).toEqual(["源 #1: first warning"]);
@@ -284,5 +347,86 @@ describe("createSourceActions parseMultipleSources", () => {
       _sourceIds: ["s1"],
     });
     expect(getState().listenerPorts).toEqual({ Duplicate: 41000 });
+  });
+
+  it("keeps repeated origins when multiple distinct deleted-origin nodes are reimported", async () => {
+    mocks.parseSubscription.mockReturnValueOnce(
+      parseResult([
+        node("Shared Origin", {
+          _originName: "Shared Origin",
+          server: "one.example.com",
+        }),
+        node("Shared Origin", {
+          _originName: "Shared Origin",
+          server: "two.example.com",
+        }),
+      ])
+    );
+    const sources = [source({ id: "s1", type: "yaml", content: "one" })];
+    const { actions, getState } = createHarness({
+      sources,
+      deletedNodeNames: ["Shared Origin"],
+    });
+
+    await actions.parseMultipleSources(sources);
+
+    expect(getState().nodes).toEqual([
+      expect.objectContaining({ name: "Shared Origin", _originName: "Shared Origin", server: "one.example.com" }),
+      expect.objectContaining({ name: "Shared Origin (2)", _originName: "Shared Origin", server: "two.example.com" }),
+    ]);
+  });
+
+  it("filters deleted node identity records while keeping blank-origin fallbacks", async () => {
+    const deleted = node("Gone");
+    const blankOrigin = node("Blank Origin", { _originName: " " });
+    mocks.parseSubscription.mockReturnValueOnce(parseResult([deleted, blankOrigin, node("Fresh")]));
+    const sources = [source({ id: "s1", type: "yaml", content: "one" })];
+    const { actions, getState } = createHarness({
+      sources,
+      deletedNodes: [
+        { originName: " Gone ", node: deleted },
+        { node: null },
+        { originName: " ", node: blankOrigin },
+      ],
+    });
+
+    await actions.parseMultipleSources(sources);
+
+    expect(getState().nodes.map((item: ParsedNode) => item.name)).toEqual(["Blank Origin", "Fresh"]);
+    expect(getState().sources[0]).toMatchObject({
+      parsed: true,
+      nodeCount: 3,
+    });
+  });
+
+  it("discards the entire batch when any source fingerprint changes before completion", async () => {
+    const first = deferred<DeferredFetchResult>();
+    const second = deferred<DeferredFetchResult>();
+    mocks.fetchUrlContentInBrowser.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const sources = [
+      source({ id: "s1", type: "url", content: "https://example.com/one" }),
+      source({ id: "s2", type: "url", content: "https://example.com/two" }),
+    ];
+    const { actions, getState } = createHarness({ sources, nodes: [node("Keep")] });
+
+    const running = actions.parseMultipleSources(sources);
+    actions.setSources(
+      getState().sources.map((item: SubscriptionSource) =>
+        item.id === "s2" ? { ...item, nameTemplate: "{name}-changed" } : item
+      )
+    );
+    first.resolve({ content: "one", headers: {}, parseResult: parseResult([node("One")]) });
+    await Promise.resolve();
+    second.resolve({ content: "two", headers: {}, parseResult: parseResult([node("Two")]) });
+    await running;
+
+    expect(getState().isLoading).toBe(false);
+    expect(getState().nodes.map((item: ParsedNode) => item.name)).toEqual(["Keep"]);
+    expect(getState().sources).toEqual([
+      expect.objectContaining({ id: "s1" }),
+      expect.objectContaining({ id: "s2", nameTemplate: "{name}-changed" }),
+    ]);
+    expect(getState().sources[0]).not.toHaveProperty("parsed");
+    expect(getState().sources[1]).not.toHaveProperty("parsed");
   });
 });

@@ -193,88 +193,99 @@ export function TemplatesSection() {
     <>
       {/* Template Selection */}
       <div className="space-y-1.5">
-        <label className="text-xs text-white/50">选择模板</label>
+        <p className="text-xs text-fg-50">选择模板</p>
         <div className="grid gap-1.5">
           {templates.map((template) => (
             <Card
               key={template.id}
               className={cn(
-                "p-2.5 cursor-pointer transition-all border-2",
-                selectedTemplate === template.id ? "border-indigo-500 bg-indigo-500/10" : "border-transparent hover:border-white/20"
+                "p-2.5 transition-all border-2",
+                selectedTemplate === template.id ? "border-indigo-500 bg-indigo-500/10" : "border-transparent hover:border-ink/20"
               )}
-              onClick={() => {
-                setTemplate(template.id);
-                interactions.templateSelected?.({
-                  source: "builtin",
-                  templateType: template.id,
-                });
-              }}
             >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  aria-pressed={selectedTemplate === template.id}
+                  aria-label={`选择 ${template.name} 模板`}
+                  className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left"
+                  onClick={() => {
+                    setTemplate(template.id);
+                    interactions.templateSelected?.({
+                      source: "builtin",
+                      templateType: template.id,
+                    });
+                  }}
+                >
+                  <div className="flex min-w-0 items-center gap-3">
                   <div
                     className={cn(
                       "w-4 h-4 rounded-full border-2 flex items-center justify-center",
-                      selectedTemplate === template.id ? "border-indigo-500" : "border-white/30"
+                      selectedTemplate === template.id ? "border-indigo-500" : "border-ink/30"
                     )}
                   >
                     {selectedTemplate === template.id && <div className="w-2 h-2 rounded-full bg-indigo-500" />}
                   </div>
                   <div>
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-white">{template.name}</span>
-                      {builtinEngagementEnabled && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void toggleBuiltinEngagement(template.id);
-                          }}
-                          disabled={!user}
-                          className={cn(
-                            "inline-flex items-center gap-0.5 text-xs transition-colors",
-                            builtinEngagement[template.id]?.isEngaged ? "text-red-400" : "text-white/40 hover:text-red-400",
-                            !user && "cursor-not-allowed opacity-50"
-                          )}
-                          title={user ? engagementAction : engagementLoginRequired}
-                        >
-                          <Heart className={cn("h-3 w-3", builtinEngagement[template.id]?.isEngaged && "fill-current")} />
-                          <span>{builtinEngagement[template.id]?.engagementCount ?? 0}</span>
-                        </button>
-                      )}
+                      <span className="text-sm font-medium text-fg">{template.name}</span>
                     </div>
-                    <p className="text-xs text-white/40 mt-0.5">{template.description}</p>
+                    <p className="text-xs text-fg-40 mt-0.5">{template.description}</p>
                   </div>
-                </div>
-                <div className="text-right text-xs text-white/40 space-y-0.5">
-                  <div>{template.groups} 代理组</div>
-                  <div>{template.rules} 规则集</div>
-                </div>
+                  </div>
+                  <div className="space-y-0.5 text-right text-xs text-fg-40">
+                    <div>{template.groups} 代理组</div>
+                    <div>{template.rules} 规则集</div>
+                  </div>
+                </button>
+                {builtinEngagementEnabled && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => void toggleBuiltinEngagement(template.id)}
+                    disabled={!user}
+                    className={cn(
+                      "h-auto gap-0.5 p-0 text-xs transition-colors hover:bg-transparent",
+                      builtinEngagement[template.id]?.isEngaged ? "text-red-400" : "text-fg-40 hover:text-red-400",
+                      !user && "cursor-not-allowed opacity-50"
+                    )}
+                    title={user ? engagementAction : engagementLoginRequired}
+                  >
+                    <Heart className={cn("h-3 w-3", builtinEngagement[template.id]?.isEngaged && "fill-current")} />
+                    <span>{builtinEngagement[template.id]?.engagementCount ?? 0}</span>
+                  </Button>
+                )}
               </div>
             </Card>
           ))}
 
           {catalogEnabled && (
             <Card
-              className="p-2.5 cursor-pointer transition-all border-2 border-dashed border-white/15 hover:border-white/25 bg-white/5"
-              onClick={() => {
-                setCatalogOpen(true);
-                interactions.templateCatalogOpened?.({ mode: "quick" });
-              }}
+              className="p-2.5 transition-all border-2 border-dashed border-ink/15 hover:border-ink/25 bg-ink/5"
             >
-              <div className="flex items-center justify-between">
+              <button
+                type="button"
+                aria-label={`打开${catalogName}`}
+                className="flex w-full items-center justify-between text-left"
+                onClick={() => {
+                  setCatalogOpen(true);
+                  interactions.templateCatalogOpened?.({ mode: "quick" });
+                }}
+              >
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-4 h-4 rounded-full border-2 border-white/30 flex items-center justify-center flex-shrink-0">
+                  <div className="w-4 h-4 rounded-full border-2 border-ink/30 flex items-center justify-center flex-shrink-0">
                     <Globe className="h-3 w-3 text-indigo-400" />
                   </div>
                   <div className="min-w-0">
-                    <span className="text-sm font-medium text-white">{catalogName}</span>
-                    <p className="text-xs text-white/40 mt-0.5 truncate">{catalogDescription}</p>
+                    <span className="text-sm font-medium text-fg">{catalogName}</span>
+                    <p className="text-xs text-fg-40 mt-0.5 truncate">{catalogDescription}</p>
                   </div>
                 </div>
-                <div className="text-right text-xs text-white/40 flex-shrink-0">
+                <div className="text-right text-xs text-fg-40 flex-shrink-0">
                   <div>{catalogSelectAction}</div>
                 </div>
-              </div>
+              </button>
             </Card>
           )}
         </div>
@@ -298,17 +309,17 @@ export function TemplatesSection() {
                 <Loader2 className="h-6 w-6 animate-spin text-primary-500" />
               </div>
             ) : filteredCatalogTemplates.length === 0 ? (
-              <div className="text-center py-10 text-sm text-white/50">暂无可用模板</div>
+              <div className="text-center py-10 text-sm text-fg-50">暂无可用模板</div>
             ) : (
               <div className="max-h-[420px] overflow-auto custom-scrollbar space-y-2 pr-1">
                 {filteredCatalogTemplates.map((t) => (
                   <div
                     key={t.id}
-                    className="p-3 rounded-lg bg-white/5 border border-white/10 flex items-start justify-between gap-3"
+                    className="p-3 rounded-lg bg-ink/5 border border-ink/10 flex items-start justify-between gap-3"
                   >
                     <div className="min-w-0">
-                      <div className="text-sm font-medium text-white truncate">{t.name}</div>
-                      <div className="text-xs text-white/50 mt-1 line-clamp-2">{t.description || ""}</div>
+                      <div className="text-sm font-medium text-fg truncate">{t.name}</div>
+                      <div className="text-xs text-fg-50 mt-1 line-clamp-2">{t.description || ""}</div>
                     </div>
                     <Button
                       size="sm"

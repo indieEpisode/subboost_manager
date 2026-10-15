@@ -52,6 +52,39 @@ describe("SSR and Snell parsers", () => {
       protocol: "origin",
       obfs: "plain",
     });
+    expect(parseSSR(`ssr://${b64(`empty-query.example.com:8388::::${b64("secret")}?`)}`)).toMatchObject({
+      name: "SSR-empty-query.example.com:8388",
+      password: "secret",
+    });
+    expect(
+      parseSSR(
+        `ssr://${b64(
+          `raw-param.example.com:8388:auth:aes-128-gcm:http:${b64("plain secret")}/?remarks=${b64("Raw SSR")}&&=skip&protoparam=${b64("proto raw")}&obfsparam=${b64("obfs raw")}`
+        )}`
+      )
+    ).toMatchObject({
+      name: "Raw SSR",
+      type: "ssr",
+      password: "plain secret",
+      protocol: "auth",
+      cipher: "aes-128-gcm",
+      obfs: "http",
+      "protocol-param": "proto raw",
+      "obfs-param": "obfs raw",
+    });
+  });
+
+  it("preserves literal plus and percent sequences after SSR base64 decoding", () => {
+    const literal = "A+B%20C";
+    const node = parseSSR(
+      `ssr://${b64(`literal.example.com:8388:origin:aes-256-cfb:plain:${b64("secret")}/?remarks=${b64(literal)}&protoparam=${b64(literal)}&obfsparam=${b64(literal)}`)}`
+    );
+
+    expect(node).toMatchObject({
+      name: literal,
+      "protocol-param": literal,
+      "obfs-param": literal,
+    });
   });
 
   it("keeps SSR validation errors explicit", () => {
