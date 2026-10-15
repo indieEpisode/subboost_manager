@@ -55,7 +55,7 @@ function text(value: any): string {
   if (Array.isArray(value)) return value.map(text).join("");
   return value?.props ? text(value.props.children) : "";
 }
-function render(values: Record<number, unknown> = {}, component = LocalUserManagement) {
+function render(values: Record<number, unknown> = {}, component: React.ComponentType = LocalUserManagement) {
   harness.values = values; harness.index = 0; harness.buttons = []; harness.inputs = []; harness.dialogs = []; harness.switches = [];
   harness.enabled = true;
   try { return renderToStaticMarkup(React.createElement(component)); }
@@ -65,7 +65,7 @@ const flush = async () => { for (let i=0;i<30;i++) await Promise.resolve(); awai
 const button = (label: string) => harness.buttons.find(p => text(p.children) === label)!;
 const response = (body: unknown, status=200) => new Response(JSON.stringify(body), { status });
 function installFetch() {
-  const fetch = vi.fn(async (url: string, options?: { method?: string }) => {
+  const fetch = vi.fn(async (url: string, options?: { method?: string; body?: string }) => {
     if (url === "/api/admin/stats") return response(data());
     if (url === "/api/admin/settings") return response({ settings: { forceRefreshOnFetch: true, forceRefreshMinIntervalSeconds: 60 } });
     return response({ success: true });
