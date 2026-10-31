@@ -17,7 +17,9 @@ import {
   type ParseCustomRuleBatchImportOptions,
 } from "@subboost/core/rules/custom-rule-batch-import";
 import { useProductInteractionAdapter } from "@subboost/ui/product/interactions";
-import type { CustomRule, CustomRuleSet } from "@subboost/core/types/config";
+import type { CustomRule, CustomRuleSet, RuleSetMetadata } from "@subboost/core/types/config";
+import { useProductApiAdapter } from "@subboost/ui/product/api-adapter";
+import { resolveRuleSetUrl, useRuleSetOperation } from "./use-rule-set-resolution";
 
 function getStatusClass(item: CustomRuleBatchImportPreviewItem): string {
   if (item.status === "ready") {
@@ -69,6 +71,8 @@ export function ProxyGroupsCustomRulesBatchDialog({
 }) {
   const [rawText, setRawText] = React.useState("");
   const interactions = useProductInteractionAdapter();
+  const api = useProductApiAdapter();
+  const operation = useRuleSetOperation(JSON.stringify([open, rawText, defaultType, defaultTarget, defaultNoResolve, existingRules, existingRuleSets]));
 
   const importPlan = React.useMemo(
     () =>
@@ -82,6 +86,7 @@ export function ProxyGroupsCustomRulesBatchDialog({
         existingRules,
         existingRuleSets,
         reservedRuleSetIds,
+        allowRemoteRuleSets: true,
       }),
     [
       defaultNoResolve,
@@ -135,8 +140,9 @@ export function ProxyGroupsCustomRulesBatchDialog({
       return;
     }
 
-    if (importPlan.rules.length > 0) onImport(importPlan.rules);
-    if (importPlan.ruleSets.length > 0) onImportRuleSets?.(importPlan.ruleSets);
+    const commit = (plan: typeof importPlan) => {
+    if (plan.rules.length > 0) onImport(plan.rules);
+    if (plan.ruleSets.length > 0) onImportRuleSets?.(plan.ruleSets);
     interactions.customRuleBatchImported?.({
       result: "success",
       ruleCount: importPlan.readyCount,
@@ -146,6 +152,24 @@ export function ProxyGroupsCustomRulesBatchDialog({
       variant: "success",
     });
     close();
+    };
+    if (importPlan.pendingRuleSetUrls.length === 0) { commit(importPlan); return; }
+    operation(async (signal) => {
+      try {
+        const resolvedRuleSets = new Map<string, RuleSetMetadata>();
+        for (const url of new Set(importPlan.pendingRuleSetUrls)) {
+          if (signal.aborted) return;
+          resolvedRuleSets.set(url, await resolveRuleSetUrl(url, api.rules, signal));
+        }
+        if (signal.aborted) return;
+        const plan = parseCustomRuleBatchImport({ text: rawText, defaultType, defaultTarget, defaultNoResolve,
+          targetOptions, ruleSetTargetOptions, existingRules, existingRuleSets, reservedRuleSetIds, resolvedRuleSets });
+        if (!plan.canImport || plan.pendingRuleSetUrls.length) throw new Error("请先修正无效或重复的规则行");
+        commit(plan);
+      } catch (error) {
+        if (!signal.aborted) toast({ title: error instanceof Error ? error.message : "规则识别失败", variant: "warning" });
+      }
+    });
   };
 
   return (
@@ -180,14 +204,17 @@ export function ProxyGroupsCustomRulesBatchDialog({
               onChange={(event) => setRawText(event.target.value)}
               placeholder={defaultType === "RULE-SET" ? "https://example.com/geosite/udemy.mrs" : [
                 "DOMAIN-SUFFIX,example.com,🚀 节点选择",
-                "IP-CIDR,1.1.1.0/24,DIRECT,no-resolve",
+                "IP-CIDR,203.0.113.0/24,DIRECT,no-resolve",
                 "GEOSITE,google",
+                "AND,((PROCESS-NAME,tailscaled),(NETWORK,UDP)),DIRECT",
                 "github.com",
               ].join("\n")}
               className="min-h-[180px] resize-y font-mono text-xs"
             />
             <div className="text-[10px] leading-4 text-fg-40">
               每行一条；缺少目标时使用当前目标，纯值行使用当前类型、目标和 no-resolve 设置。
+              正则与逻辑规则有目标时放在最后一列；no-resolve 仅对目标 IP 规则及规则集生效。
+              {'正则含歧义的字面逗号时，类型和值分别用双引号包裹，如："DOMAIN-REGEX","^local,subboost$"；只写这两列会使用当前目标。'}
             </div>
           </div>
 

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fetchSourceUserInfoHeadersDirect, importSourceUrlDirect } from "./source-import";
+import { fetchRuleContentDirect, fetchSourceUserInfoHeadersDirect, importSourceUrlDirect } from "./source-import";
 
 const mocks = vi.hoisted(() => ({
   getAllowUnsafeSubscriptionSources: vi.fn(),
@@ -111,6 +111,33 @@ describe("local source import transport", () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
+  it("applies the requesting account's private-network permission to rule content", async () => {
+    mocks.getAllowUnsafeSubscriptionSources.mockResolvedValueOnce(true);
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(response("example.test", { status: 200 }));
+
+    await expect(fetchRuleContentDirect("http://127.0.0.1/rules", "admin-1")).resolves.toMatchObject({
+      ok: true,
+      content: "example.test",
+    });
+    await expect(fetchRuleContentDirect("http://127.0.0.1/rules", "user-2")).resolves.toMatchObject({
+      ok: false,
+      errorInfo: { category: "security" },
+    });
+    expect(mocks.getAllowUnsafeSubscriptionSources).toHaveBeenNthCalledWith(1, "admin-1");
+    expect(mocks.getAllowUnsafeSubscriptionSources).toHaveBeenNthCalledWith(2, "user-2");
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(mocks.requestPinnedText).not.toHaveBeenCalled();
+  });
+
+  it("blocks private rule content when no account is supplied", async () => {
+    await expect(fetchRuleContentDirect("http://127.0.0.1/rules")).resolves.toMatchObject({
+      ok: false,
+      errorInfo: { category: "security" },
+    });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(mocks.requestPinnedText).not.toHaveBeenCalled();
+  });
+
   it("rejects hostnames that resolve to private addresses", async () => {
     mocks.lookup.mockResolvedValueOnce([{ address: "10.0.0.2" }]);
 
@@ -198,6 +225,45 @@ describe("local source import transport", () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
+  describe.each([
+    { name: "dual-stack", addresses: ["198.18.0.7", "2001:2::7"] },
+    { name: "IPv6-only", addresses: ["2001:2::7"] },
+  ])("$name fake-ip DNS", ({ addresses }) => {
+    it("rechecks and pins only the public DoH result", async () => {
+      mocks.lookup.mockResolvedValueOnce(addresses.map((address) => ({ address })));
+      vi.mocked(globalThis.fetch)
+        .mockResolvedValueOnce(dnsResponse(["1.1.1.1"]))
+        .mockResolvedValueOnce(dnsResponse([]));
+
+      await expect(runTransport("https://local.subboost.test/sub")).resolves.toMatchObject({ ok: true });
+      expect(mocks.requestPinnedText).toHaveBeenCalledWith(expect.objectContaining({ addresses: ["1.1.1.1"] }));
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("blocks unsafe and empty DoH results", async () => {
+      mocks.lookup.mockResolvedValue(addresses.map((address) => ({ address })));
+      vi.mocked(globalThis.fetch)
+        .mockResolvedValueOnce(dnsResponse(["10.0.0.2"]))
+        .mockResolvedValueOnce(dnsResponse([]));
+      await expect(runTransport("https://local.subboost.test/sub")).resolves.toMatchObject({ ok: false });
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+      expect(mocks.requestPinnedText).not.toHaveBeenCalled();
+
+      vi.mocked(globalThis.fetch).mockImplementation(async () => dnsResponse([]));
+      await expect(runTransport("https://local.subboost.test/sub")).resolves.toMatchObject({ ok: false });
+      expect(mocks.requestPinnedText).not.toHaveBeenCalled();
+    });
+  });
+
+  it("does not recheck fake-ip mixed with private IPv6", async () => {
+    mocks.lookup.mockResolvedValueOnce([{ address: "2001:2::7" }, { address: "fd00::1" }]);
+    await expect(runTransport("https://local.subboost.test/sub")).resolves.toMatchObject({
+      ok: false, errorInfo: { category: "security" },
+    });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(mocks.requestPinnedText).not.toHaveBeenCalled();
+  });
+
   it("revalidates and pins every redirect target independently", async () => {
     mocks.lookup
       .mockResolvedValueOnce([{ address: "93.184.216.34" }])
@@ -273,6 +339,7 @@ describe("local source import transport", () => {
       "http://[febf::1]/sub",
       "http://[ff00::1]/sub",
       "http://[2001:db8::1]/sub",
+      "http://[2001:2::7]/sub",
       "http://[::ffff:192.168.0.1]/sub",
     ];
 

@@ -2,7 +2,7 @@
  * Clash 配置生成器 - 浏览器端运行
  */
 
-import yaml from "js-yaml";
+import { loadMihomoYaml } from "../config/yaml-schema";
 import {
   buildDefaultBaseConfigPatch,
   buildDefaultUserConfig,
@@ -34,6 +34,7 @@ import type {
 } from "@subboost/core/types/config";
 import type { DialerProxyGroup } from "@subboost/core/types/template-config";
 import { collectDnsPolicyEntries, configToYaml } from "./yaml";
+import { shareHealthChecks } from "./shared-health-checks";
 import { isMihomoSupportedProxyNode, normalizeMihomoVlessForGeneration } from "../mihomo/proxy-sanitizer";
 import { getValidDialerRelayGroupNames } from "../subscription/dialer-relay-group-names";
 import { chooseFallbackPolicyTarget, withBuiltinPolicyTargets } from "./policy-targets";
@@ -91,7 +92,7 @@ function formatYamlParseError(error: unknown): string {
  */
 function parseBaseConfigYaml(configYaml: string): BaseConfig {
   try {
-    const parsed = yaml.load(configYaml) as unknown;
+    const parsed = loadMihomoYaml(configYaml);
     if (!isPlainObject(parsed)) {
       throw new BaseConfigYamlError("基础和 DNS 配置必须是 YAML 对象（顶层 key/value 映射），不能是字符串、数组、数字、布尔值或 null。");
     }
@@ -590,7 +591,7 @@ export function generateClashConfig(options: GenerateOptions): ClashConfig {
     }),
   };
 
-  return clashConfig as unknown as ClashConfig;
+  return (config.sharedHealthChecks === true ? shareHealthChecks(clashConfig) : clashConfig) as unknown as ClashConfig;
 }
 
 /**

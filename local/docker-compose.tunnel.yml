@@ -15,7 +15,7 @@ services:
     pull_policy: never
     build:
       args:
-        NODE_IMAGE: ${SUBBOOST_NODE_IMAGE:-node:22-alpine}
+        NODE_IMAGE: ${SUBBOOST_NODE_IMAGE:-node:24.22.1-alpine}
     environment:
       TZ: UTC
       HOSTNAME: 0.0.0.0

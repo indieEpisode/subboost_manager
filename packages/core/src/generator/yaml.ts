@@ -37,7 +37,7 @@ const PROXY_FIELD_ORDER_PROTOCOL: Partial<Record<KnownNodeType, string[]>> = {
     "ip",
     "ipv6",
     "mtu",
-    "keepalive",
+    "persistent-keepalive",
     "reserved",
     "dns",
     "allowed-ips",
@@ -132,7 +132,7 @@ function getOrderedProxyKeys(node: Record<string, unknown>): string[] {
   return out;
 }
 
-function canonicalizeProxy(node: Record<string, unknown>): Record<string, unknown> {
+export function canonicalizeProxy(node: Record<string, unknown>): Record<string, unknown> {
   const copy = sanitizeMihomoProxyNode(node);
   const type = typeof copy.type === "string" ? copy.type : "";
   if (copy.udp === undefined && UDP_SUPPORTED_TYPES.has(type as KnownNodeType)) {
