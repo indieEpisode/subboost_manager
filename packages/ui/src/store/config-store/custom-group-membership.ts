@@ -64,20 +64,21 @@ export function getCustomGroupMemberTargets(state: ConfigState, sourceId: string
   });
 }
 
-function appendCustomMember(
-  advanced: ProxyGroupAdvancedConfig = {}, sourceId: string, members: ProxyGroupMemberRef[],
+function addCustomMember(
+  advanced: ProxyGroupAdvancedConfig = {}, sourceId: string, members: ProxyGroupMemberRef[], position: "start" | "end",
 ): ProxyGroupAdvancedConfig {
   const ref: ProxyGroupMemberRef = { kind: "custom", id: sourceId };
   const key = getProxyGroupMemberKey(ref);
-  // Keep saved references (including filtered nodes) and append any current
-  // defaults before the new member, so restoring an excluded group stays last.
+  // Keep saved references (including filtered nodes) and the current members'
+  // relative order, then insert the new candidate at the requested position.
   const memberOrder = (advanced.memberOrder ?? []).filter((member) => getProxyGroupMemberKey(member) !== key);
   const orderedKeys = new Set(memberOrder.map(getProxyGroupMemberKey));
+  const existingOrder = [...memberOrder, ...members.filter((member) => !orderedKeys.has(getProxyGroupMemberKey(member)))];
   return {
     ...advanced,
     extraMembers: [...(advanced.extraMembers ?? []).filter((member) => getProxyGroupMemberKey(member) !== key), ref],
     excludedMembers: (advanced.excludedMembers ?? []).filter((member) => getProxyGroupMemberKey(member) !== key),
-    memberOrder: [...memberOrder, ...members.filter((member) => !orderedKeys.has(getProxyGroupMemberKey(member))), ref],
+    memberOrder: position === "start" ? [ref, ...existingOrder] : [...existingOrder, ref],
   };
 }
 
@@ -85,6 +86,7 @@ export function buildCustomGroupMemberPatch(
   state: ConfigState,
   sourceId: string,
   targetKeys: readonly string[],
+  position: "start" | "end" = "end",
 ): Partial<ConfigState> {
   const selected = new Set(targetKeys);
   const targets = getCustomGroupMemberTargets(state, sourceId)
@@ -94,13 +96,13 @@ export function buildCustomGroupMemberPatch(
   const customTargets = new Map(targets.filter((target) => target.kind === "custom").map((target) => [target.id, target]));
   for (const target of targets) {
     if (target.kind === "module") {
-      proxyGroupAdvanced[target.id] = appendCustomMember(proxyGroupAdvanced[target.id], sourceId, target.members);
+      proxyGroupAdvanced[target.id] = addCustomMember(proxyGroupAdvanced[target.id], sourceId, target.members, position);
     }
   }
   return {
     proxyGroupAdvanced,
     customProxyGroups: state.customProxyGroups.map((group) => customTargets.has(group.id)
-      ? { ...group, advanced: appendCustomMember(group.advanced, sourceId, customTargets.get(group.id)!.members) }
+      ? { ...group, advanced: addCustomMember(group.advanced, sourceId, customTargets.get(group.id)!.members, position) }
       : group),
   };
 }

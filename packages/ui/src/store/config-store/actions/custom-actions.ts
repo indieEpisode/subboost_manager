@@ -73,8 +73,8 @@ export function createCustomActions(
   setAndGenerateConfig: SetAndGenerateConfig,
 ): CustomActions {
   return {
-    addCustomProxyGroupToGroups: (id, targetKeys) => {
-      setAndGenerateConfig((state) => buildCustomGroupMemberPatch(state, id, targetKeys));
+    addCustomProxyGroupToGroups: (id, targetKeys, position) => {
+      setAndGenerateConfig((state) => buildCustomGroupMemberPatch(state, id, targetKeys, position));
     },
     addCustomRule: (rule: CustomRule) => {
       setAndGenerateConfig((state) => {

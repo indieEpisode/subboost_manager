@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { Button } from "@subboost/ui/components/ui/button";
+import { ChoiceChip, ChoiceGroup } from "@subboost/ui/components/ui/choice-group";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@subboost/ui/components/ui/dialog";
 import { toast } from "@subboost/ui/components/ui/toaster";
 import { useConfigStore } from "@subboost/ui/store/config-store";
@@ -13,6 +14,7 @@ export function CustomGroupBulkAddDialog({ groupId, onClose }: { groupId: string
   const targets = React.useMemo(() => getCustomGroupMemberTargets(state, groupId), [state, groupId]);
   const available = targets.filter((target) => !target.reason);
   const [selected, setSelected] = React.useState(() => new Set(available.map((target) => target.key)));
+  const [position, setPosition] = React.useState<"start" | "end">("end");
   // Revalidate against current state; a target may have been removed or edited
   // while the dialog was open. The store action validates again atomically.
   const selectedKeys = available.filter((target) => selected.has(target.key)).map((target) => target.key);
@@ -23,9 +25,20 @@ export function CustomGroupBulkAddDialog({ groupId, onClose }: { groupId: string
         <DialogHeader>
           <DialogTitle className="break-words pr-6">添加到多个分流组</DialogTitle>
           <DialogDescription>
-            将「{group?.name}」追加为所选分流组的候选项，保留原有成员、顺序和默认选择。
+            将「{group?.name}」添加为所选分流组的候选项，保留原有成员及其相对顺序。
           </DialogDescription>
         </DialogHeader>
+        <div className="space-y-2">
+          <ChoiceGroup label="添加位置">
+            <ChoiceChip label="最下方（默认）" selected={position === "end"} onClick={() => setPosition("end")} />
+            <ChoiceChip label="最上方" selected={position === "start"} onClick={() => setPosition("start")} />
+          </ChoiceGroup>
+          <p className="text-xs text-fg-50">
+            {position === "start"
+              ? "放在最上方时，可能成为客户端首次加载时的默认选择；已有选择是否保留取决于客户端。"
+              : "放在最下方，保留原有默认选择。"}
+          </p>
+        </div>
         <div className="flex items-center gap-2">
           <Button type="button" variant="outline" size="sm" disabled={available.length === 0}
             onClick={() => setSelected(new Set(available.map((target) => target.key)))}>全选可添加分组</Button>
@@ -52,7 +65,7 @@ export function CustomGroupBulkAddDialog({ groupId, onClose }: { groupId: string
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose}>取消</Button>
           <Button type="button" disabled={selectedKeys.length === 0} onClick={() => {
-            state.addCustomProxyGroupToGroups(groupId, selectedKeys);
+            state.addCustomProxyGroupToGroups(groupId, selectedKeys, position);
             toast({ title: "已添加到所选分流组", description: "保存订阅后，更新客户端订阅即可使用。" });
             onClose();
           }}>添加到所选分流组</Button>

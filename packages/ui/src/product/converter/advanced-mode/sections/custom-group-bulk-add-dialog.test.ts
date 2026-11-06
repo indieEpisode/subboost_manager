@@ -6,6 +6,7 @@ import { initialState } from "@subboost/ui/store/config-store/definitions";
 const mocks = vi.hoisted(() => ({
   state: {} as any,
   selected: undefined as Set<string> | undefined,
+  position: "end" as "start" | "end",
   close: vi.fn(),
   toast: vi.fn(),
 }));
@@ -14,7 +15,9 @@ vi.mock("react", async (importOriginal) => {
   return {
     ...actual,
     useMemo: (factory: () => unknown) => factory(),
-    useState: (initial: () => Set<string>) => [mocks.selected ?? initial(), (next: any) => {
+    useState: (initial: (() => Set<string>) | string) => typeof initial === "string"
+      ? [mocks.position, (next: "start" | "end") => { mocks.position = next; }]
+      : [mocks.selected ?? initial(), (next: any) => {
       mocks.selected = typeof next === "function" ? next(mocks.selected ?? initial()) : next;
     }],
   };
@@ -46,6 +49,7 @@ describe("custom group bulk add dialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.selected = undefined;
+    mocks.position = "end";
     mocks.state = {
       ...structuredClone(initialState),
       nodes: [], enabledProxyGroups: ["select", "auto", "ai", "youtube"],
@@ -57,14 +61,25 @@ describe("custom group bulk add dialog", () => {
   it("selects eligible targets, explains skipped targets, and submits once", () => {
     const tree = render();
     const html = renderToStaticMarkup(tree);
-    expect(html).toContain("保留原有成员、顺序和默认选择");
+    expect(html).toContain("保留原有成员及其相对顺序");
+    expect(html).toContain("放在最下方，保留原有默认选择");
     expect(html).toContain("不能添加到自身");
     expect(html).toContain("自动策略组无需手动选择");
     expect(html).toContain("已选 3 个");
     button(tree, "添加到所选分流组").props.onClick();
-    expect(mocks.state.addCustomProxyGroupToGroups).toHaveBeenCalledExactlyOnceWith("pool", ["module:select", "module:ai", "module:youtube"]);
+    expect(mocks.state.addCustomProxyGroupToGroups).toHaveBeenCalledExactlyOnceWith("pool", ["module:select", "module:ai", "module:youtube"], "end");
     expect(mocks.close).toHaveBeenCalledOnce();
     expect(mocks.toast).toHaveBeenCalledOnce();
+  });
+
+  it("allows choosing the top position and explains its effect on the default", () => {
+    const choose = (label: string) => elements(render()).find((element) => element.props.label === label)!.props.onClick();
+    choose("最上方");
+    expect(renderToStaticMarkup(render())).toContain("可能成为客户端首次加载时的默认选择");
+    button(render(), "添加到所选分流组").props.onClick();
+    expect(mocks.state.addCustomProxyGroupToGroups).toHaveBeenCalledWith("pool", ["module:select", "module:ai", "module:youtube"], "start");
+    choose("最下方（默认）");
+    expect(mocks.position).toBe("end");
   });
 
   it("supports clear, select all, individual selection, cancel, and closing without applying", () => {

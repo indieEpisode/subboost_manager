@@ -53,6 +53,25 @@ describe("bulk custom group membership", () => {
     expect(after.proxyGroupAdvanced.ai.excludedMembers).toEqual([{ kind: "reject" }]);
   });
 
+  it("can place the candidate first while preserving the relative order of existing members", () => {
+    const before = state({ proxyGroupAdvanced: { ai: {
+      memberOrder: [{ kind: "node", name: "US Node" }, { kind: "node", name: "Hidden Node" }, { kind: "direct" }],
+      excludedMembers: [{ kind: "custom", id: "pool" }],
+    } } });
+    useConfigStore.setState(before);
+    useConfigStore.getState().addCustomProxyGroupToGroups("pool", ["module:ai", "custom:other"], "start");
+    const after = useConfigStore.getState();
+    for (const name of ["🤖 AI 服务", "Other Pool"]) {
+      expect(groups(after).find((group) => group.name === name)?.proxies)
+        .toEqual([source.name, ...groups(before).find((group) => group.name === name)!.proxies!]);
+    }
+    expect(after.proxyGroupAdvanced.ai.memberOrder).toContainEqual({ kind: "node", name: "Hidden Node" });
+    expect(after.generatedYamlError).toBeNull();
+    expect(groups(after).find((group) => group.name === "🚀 节点选择"))
+      .toEqual(groups(before).find((group) => group.name === "🚀 节点选择"));
+    expect(buildCustomGroupMemberPatch(after, "pool", ["module:ai"], "start")).toBe(after);
+  });
+
   it("skips direct and transitive cycles, itself, automatic groups, and existing membership", () => {
     const before = state({
       customProxyGroups: [{ ...source, advanced: { extraMembers: [{ kind: "custom", id: "other" }] } },
