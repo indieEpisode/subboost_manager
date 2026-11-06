@@ -4,26 +4,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   buttons: [] as any[],
-  dropdownItems: [] as any[],
+  pickers: [] as any[],
   inputs: [] as any[],
 }));
-
-const stateMock = vi.hoisted(() => ({
-  enabled: false,
-  value: "",
-  setter: vi.fn(),
-}));
-
-vi.mock("react", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("react")>();
-  return {
-    ...actual,
-    useState: (initial: unknown) => {
-      if (!stateMock.enabled) return actual.useState(initial);
-      return [stateMock.value, stateMock.setter];
-    },
-  };
-});
 
 vi.mock("lucide-react", () => ({
   ChevronDown: () => null,
@@ -37,14 +20,11 @@ vi.mock("@subboost/ui/components/ui/button", () => ({
   },
 }));
 
-vi.mock("@subboost/ui/components/ui/dropdown-menu", () => ({
-  DropdownMenu: (props: any) => props.children,
-  DropdownMenuContent: (props: any) => props.children,
-  DropdownMenuItem: (props: any) => {
-    mocks.dropdownItems.push(props);
+vi.mock("@subboost/ui/components/ui/emoji-picker", () => ({
+  EmojiPickerPopover: (props: any) => {
+    mocks.pickers.push(props);
     return props.children;
   },
-  DropdownMenuTrigger: (props: any) => props.children,
 }));
 
 vi.mock("@subboost/ui/components/ui/input", () => ({
@@ -60,7 +40,7 @@ vi.mock("@subboost/ui/lib/utils", () => ({
 
 import {
   ProxyGroupNameEditor,
-  PROXY_GROUP_EMOJI_LIBRARY,
+  PROXY_GROUP_EMOJI_PALETTE,
   buildProxyGroupName,
   parseProxyGroupNameDraft,
   toProxyGroupNameDraft,
@@ -70,16 +50,13 @@ describe("ProxyGroupNameEditor", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     mocks.buttons = [];
-    mocks.dropdownItems = [];
+    mocks.pickers = [];
     mocks.inputs = [];
-    stateMock.enabled = false;
-    stateMock.value = "";
-    stateMock.setter = vi.fn();
   });
 
   it("parses and builds proxy group name drafts", () => {
-    expect(PROXY_GROUP_EMOJI_LIBRARY.length).toBeGreaterThan(300);
-    expect(PROXY_GROUP_EMOJI_LIBRARY).toEqual(expect.arrayContaining(["😀", "🧠", "🚀", "🇺🇸"]));
+    expect(PROXY_GROUP_EMOJI_PALETTE.length).toBeGreaterThan(10);
+    expect(PROXY_GROUP_EMOJI_PALETTE).toEqual(expect.arrayContaining(["🤖", "🚀", "🇺🇸"]));
     expect(parseProxyGroupNameDraft("🤖 AI 服务", "🧩")).toEqual({ emoji: "🤖", name: "AI 服务" });
     expect(parseProxyGroupNameDraft("Group A", "")).toEqual({ emoji: "", name: "Group A" });
     expect(parseProxyGroupNameDraft(123 as any, "🔗")).toEqual({ emoji: "🔗", name: "" });
@@ -118,9 +95,7 @@ describe("ProxyGroupNameEditor", () => {
     expect(nameInput).toEqual(expect.objectContaining({ value: "旧名称", autoFocus: true }));
     expect(mocks.buttons.find((props: any) => props.title === "随机 emoji")).toBeUndefined();
     expect(mocks.buttons.find((props: any) => props.title === "选择 emoji").className).toContain("right-1");
-    expect(mocks.dropdownItems[0]).toEqual(expect.objectContaining({ title: "随机 emoji" }));
-    expect(mocks.dropdownItems[0].className).toContain("justify-center");
-    expect(mocks.dropdownItems[1].children).toBe("🧩");
+    expect(mocks.pickers[0]).toEqual(expect.objectContaining({ value: "🧩", allowEmpty: false }));
 
     emojiInput.onChange({ target: { value: "" } });
     expect(onChange).not.toHaveBeenCalled();
@@ -131,33 +106,22 @@ describe("ProxyGroupNameEditor", () => {
     nameInput.onChange({ target: { value: "新名称" } });
     expect(onChange).toHaveBeenCalledWith({ emoji: "🧩", name: "新名称" });
 
-    mocks.dropdownItems[0].onClick();
+    mocks.pickers[0].onSelect(mocks.pickers[0].randomEmoji());
     expect(onChange).toHaveBeenCalledWith({ emoji: "🚀", name: "旧名称" });
-
-    mocks.dropdownItems.find((props: any) => props.children === "🤖").onClick();
-    expect(onChange).toHaveBeenCalledWith({ emoji: "🤖", name: "旧名称" });
+    mocks.pickers[0].onSelect("🧑🏽‍🚀");
+    expect(onChange).toHaveBeenCalledWith({ emoji: "🧑🏽‍🚀", name: "旧名称" });
 
     nameInput.onKeyDown({ key: "Enter" });
     expect(onKeyDown).toHaveBeenCalledWith({ key: "Enter" });
   });
 
-  it("filters the emoji dropdown by search text", () => {
-    stateMock.enabled = true;
-    stateMock.value = "🤖";
-
-    renderToStaticMarkup(
-      React.createElement(ProxyGroupNameEditor, {
-        value: "🔗 自动选择",
-        onChange: vi.fn(),
-      })
-    );
-
-    const searchInput = mocks.inputs.find((props: any) => props.placeholder === "搜索 emoji");
-    expect(searchInput).toEqual(expect.objectContaining({ value: "🤖" }));
-    searchInput.onChange({ target: { value: "🚀" } });
-    expect(stateMock.setter).toHaveBeenCalledWith("🚀");
-    expect(mocks.dropdownItems[0]).toEqual(expect.objectContaining({ title: "随机 emoji" }));
-    expect(mocks.dropdownItems[0].className).toContain("justify-center");
-    expect(mocks.dropdownItems.filter((props: any) => props.title !== "随机 emoji").map((props: any) => props.children)).toEqual(["🤖"]);
+  it("allows clearing optional emojis and keeps the name unchanged", () => {
+    const onChange = vi.fn();
+    renderToStaticMarkup(React.createElement(ProxyGroupNameEditor, { value: "🔗 自动选择", onChange }));
+    expect(mocks.pickers[0].allowEmpty).toBe(true);
+    mocks.pickers[0].onSelect("");
+    expect(onChange).toHaveBeenCalledWith({ emoji: "", name: "自动选择" });
+    mocks.inputs.find((props: any) => props["aria-label"] === "emoji").onChange({ target: { value: "" } });
+    expect(onChange).toHaveBeenLastCalledWith({ emoji: "", name: "自动选择" });
   });
 });

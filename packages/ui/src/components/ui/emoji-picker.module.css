@@ -1,0 +1,51 @@
+.popover {
+  background-color: var(--surface);
+}
+
+.picker {
+  color-scheme: var(--date-input-scheme);
+  --epr-font-family: inherit;
+  --epr-bg-color: var(--surface);
+  --epr-text-color: var(--fg-70);
+  --epr-picker-border-color: transparent;
+  --epr-picker-border-radius: 0;
+  --epr-highlight-color: var(--color-primary-500);
+  --epr-hover-bg-color: var(--selected-bg);
+  --epr-focus-bg-color: var(--selected-bg);
+  --epr-horizontal-padding: 12px;
+  --epr-emoji-size: 28px;
+  --epr-emoji-padding: 5px;
+  --epr-search-input-height: 36px;
+  --epr-search-input-bg-color: var(--field-bg);
+  --epr-search-input-bg-color-active: var(--field-bg);
+  --epr-search-input-text-color: var(--fg);
+  --epr-search-input-placeholder-color: var(--fg-40);
+  --epr-search-border-color: var(--field-border);
+  --epr-search-border-color-active: var(--color-primary-500);
+  --epr-search-input-border-radius: 10px;
+  --epr-search-icon-color: var(--fg-40);
+  --epr-category-label-bg-color: var(--surface);
+  --epr-category-label-text-color: var(--fg-50);
+  --epr-category-label-height: 32px;
+  --epr-category-icon-inactive-color: var(--fg-40);
+  --epr-category-icon-active-color: var(--color-primary-400);
+  --epr-preview-height: 48px;
+  --epr-preview-emoji-size: 28px;
+  --epr-preview-text-size: 12px;
+  --epr-preview-text-color: var(--fg-60);
+  --epr-skin-tone-picker-menu-color: var(--surface-raised);
+}
+
+.picker [data-epr-part="category-label"] {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.picker :is([data-epr-part="emoji"], [data-epr-part="category-tab"]) {
+  border-radius: 8px;
+}
+
+.picker [data-epr-part="viewport"] {
+  scrollbar-width: thin;
+  scrollbar-color: var(--custom-scrollbar-thumb) transparent;
+}
