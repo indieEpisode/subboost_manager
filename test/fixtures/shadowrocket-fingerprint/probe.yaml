@@ -1,0 +1,73 @@
+# Import-only diagnostic: synthetic credentials and reserved .invalid hosts.
+# Inspect each new node's TLS fingerprint without editing or connecting it.
+# A: current response; B: value casing; C: alternate field; D: both fields.
+# C/D are Shadowrocket parser experiments, not valid Mihomo certificate pins.
+proxies:
+  - name: TEST-A-client-lowercase
+    type: vless
+    server: a.example.invalid
+    port: 443
+    uuid: 00000000-0000-4000-8000-000000000001
+    tls: true
+    servername: example.invalid
+    network: tcp
+    flow: xtls-rprx-vision
+    udp: true
+    reality-opts:
+      public-key: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE
+      short-id: "0123456789abcdef"
+    client-fingerprint: chrome140
+  - name: TEST-B-client-capital
+    type: vless
+    server: b.example.invalid
+    port: 443
+    uuid: 00000000-0000-4000-8000-000000000002
+    tls: true
+    servername: example.invalid
+    network: tcp
+    flow: xtls-rprx-vision
+    udp: true
+    reality-opts:
+      public-key: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE
+      short-id: "0123456789abcdef"
+    client-fingerprint: Chrome140
+  - name: TEST-C-fingerprint-field
+    type: vless
+    server: c.example.invalid
+    port: 443
+    uuid: 00000000-0000-4000-8000-000000000003
+    tls: true
+    servername: example.invalid
+    network: tcp
+    flow: xtls-rprx-vision
+    udp: true
+    reality-opts:
+      public-key: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE
+      short-id: "0123456789abcdef"
+    fingerprint: Chrome140
+  - name: TEST-D-both-fields
+    type: vless
+    server: d.example.invalid
+    port: 443
+    uuid: 00000000-0000-4000-8000-000000000004
+    tls: true
+    servername: example.invalid
+    network: tcp
+    flow: xtls-rprx-vision
+    udp: true
+    reality-opts:
+      public-key: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE
+      short-id: "0123456789abcdef"
+    client-fingerprint: Chrome140
+    fingerprint: Chrome140
+proxy-groups:
+  - name: TEST-IMPORT-ONLY
+    type: select
+    proxies:
+      - DIRECT
+      - TEST-A-client-lowercase
+      - TEST-B-client-capital
+      - TEST-C-fingerprint-field
+      - TEST-D-both-fields
+rules:
+  - MATCH,DIRECT
