@@ -34,6 +34,8 @@ Docker、订阅导入和订阅服务的三处文件冲突已解决并完成复�
 
 2026-11-07 在本分支以经官方 SHA-256 校验的 Node 24.22.1 和原锁文件验证：25 项针对性测试、`npm run lint`、`npm run test:coverage`（344 个文件、2747 项）及 `npm run check:local-app` 全部通过。覆盖率为语句 98.34%、分支 97.02%、函数 97.99%、行 98.94%。完整套件中发现并在未修改基线上复现了模板共享功能的一处旧测试模拟缺失，已补齐空查询结果，未改模板业务逻辑。以上结果不包含 Docker 镜像构建、生产部署或手机实测。
 
+随后通过 [Shadowrocket 导入对照样本](../test/fixtures/shadowrocket-fingerprint/README.md)，用户在 2.2.93 上反馈：新导入节点使用 `client-fingerprint: chrome140` 或 `client-fingerprint: Chrome140` 均显示 Chrome140；添加 `fingerprint: Chrome140` 的样本反而显示 Safari26_3。因此保留当前字段与小写值，不依据原生分享 URI 的参数名替换 YAML 字段。该结果仅验证新节点导入，不代表已有订阅更新、真实请求标识或代理连通性均已验证。
+
 ## Linux 与现有 Cloudflare Tunnel
 
 `local/docker-compose.yml` 是上游的基础配置。可选的 `local/docker-compose.tunnel.yml` 增加独立 Tunnel、应用就绪检查和日志轮转，并支持固定镜像摘要。
