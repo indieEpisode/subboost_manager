@@ -1,5 +1,6 @@
 import { apiError } from "@local/lib/http";
 import { generateSubscriptionYaml } from "@local/lib/subscription-service";
+import { adaptSubscriptionForUserAgent } from "@local/lib/subscription-client-profile";
 import { buildSubscriptionResponseHeaders } from "@subboost/server-core/subscription";
 import {
   consumeLocalRateLimit,
@@ -59,12 +60,25 @@ export async function GET(request: Request, { params }: RouteContext) {
   }
 
   const data = result.data;
-  return new Response(data.yaml, {
-    headers: buildSubscriptionResponseHeaders(data.name, data.subscriptionInfo, {
+  let responseYaml: string;
+  try {
+    responseYaml = adaptSubscriptionForUserAgent(data.yaml, request.headers.get("user-agent"));
+  } catch {
+    // YAML parser errors can contain node credentials; do not expose their details.
+    const response = apiError("Unable to prepare client subscription.", "INTERNAL_ERROR", 500);
+    response.headers.set("Cache-Control", "no-store");
+    response.headers.set("Vary", "User-Agent");
+    return response;
+  }
+
+  const headers = new Headers(
+    buildSubscriptionResponseHeaders(data.name, data.subscriptionInfo, {
       cacheControl: "no-store",
       cacheExpirySeconds: data.cacheExpirySeconds,
       autoUpdateIntervalSeconds: data.autoUpdateIntervalSeconds,
       isAdmin: data.isAdmin,
-    }),
-  });
+    })
+  );
+  headers.append("Vary", "User-Agent");
+  return new Response(responseYaml, { headers });
 }
