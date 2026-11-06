@@ -22,7 +22,7 @@ Docker、订阅导入和订阅服务的三处文件冲突已解决并完成复�
 
 ## Shadowrocket Reality 下载适配
 
-同一条订阅链接按下载请求的 `User-Agent` 区分客户端：完整匹配 `Shadowrocket` 时，将最终 YAML 中带非空 Reality 公钥的 VLESS 节点指纹调整为 `chrome140`。Clash/Mihomo 和其他客户端直接返回生成器原始正文，不解析或重新序列化。
+同一条订阅链接按下载请求的 `User-Agent` 区分客户端：完整匹配 `Shadowrocket` 时，将最终 YAML 中带非空 Reality 公钥的 VLESS 节点指纹调整为 `chrome140`，并移除这些节点的 `reality-opts.support-x25519mlkem768`。Clash/Mihomo 和其他客户端直接返回生成器原始正文，不解析或重新序列化，保留原有 ML-KEM 配置。
 
 适配发生在成功生成订阅后的响应层，不修改数据库、共享节点、生成配置或订阅 token。规则、DNS、策略组和 `dialer-proxy` 链路定义保留。成功响应保留原订阅信息、更新间隔及 `Cache-Control: no-store`，并增加 `Vary: User-Agent`；原有限流、强制刷新失败与 404 行为保留。调整异常只返回通用错误，避免泄露解析器可能包含的节点凭据。
 
@@ -35,6 +35,10 @@ Docker、订阅导入和订阅服务的三处文件冲突已解决并完成复�
 2026-11-07 在本分支以经官方 SHA-256 校验的 Node 24.22.1 和原锁文件验证：25 项针对性测试、`npm run lint`、`npm run test:coverage`（344 个文件、2747 项）及 `npm run check:local-app` 全部通过。覆盖率为语句 98.34%、分支 97.02%、函数 97.99%、行 98.94%。完整套件中发现并在未修改基线上复现了模板共享功能的一处旧测试模拟缺失，已补齐空查询结果，未改模板业务逻辑。以上结果不包含 Docker 镜像构建、生产部署或手机实测。
 
 随后通过 [Shadowrocket 导入对照样本](../test/fixtures/shadowrocket-fingerprint/README.md)，用户在 2.2.93 上反馈：新导入节点使用 `client-fingerprint: chrome140` 或 `client-fingerprint: Chrome140` 均显示 Chrome140；添加 `fingerprint: Chrome140` 的样本反而显示 Safari26_3。因此保留当前字段与小写值，不依据原生分享 URI 的参数名替换 YAML 字段。该结果仅验证新节点导入，不代表已有订阅更新、真实请求标识或代理连通性均已验证。
+
+进一步的真实请求检查确认客户端标识能匹配 Shadowrocket。生产结构对照样本 E/F/H（均含 `support-x25519mlkem768: true`）导入后显示 Chrome120，只有去掉该字段的 G 显示 Chrome140；字段顺序和是否补 short-id 均未改变这一结果。修正因此仅在 Shadowrocket 响应中去掉这个 Mihomo 开关，保留 Reality 公钥、short-id、其他 Reality 参数及链路定义；即使节点原先已经写有 chrome140，也会执行移除。该字段不会从持久化配置或 Clash/Mihomo 响应中删除。真实订阅的更新和访问仍需在修正版本部署后验证。
+
+此修正已通过 28 项针对性测试、`npm run lint`、`npm run test:coverage`（344 个文件、2750 项）及 `npm run check:local-app`。覆盖率为语句 98.34%、分支 97.02%、函数 97.99%、行 98.95%。对真实订阅下载内容的本地适配验证确认 6 个 Reality 节点均为 chrome140 且不含冲突字段，其他字段保留，Clash/Mihomo 原始正文不变；这不等于修正版本已经部署或真实节点已经连通。
 
 ## Linux 与现有 Cloudflare Tunnel
 

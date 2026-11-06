@@ -107,7 +107,7 @@ describe("local subscription YAML route", () => {
         tls: true,
         flow: "xtls-rprx-vision",
         "client-fingerprint": "chrome120",
-        "reality-opts": { "public-key": "A".repeat(43), "short-id": "abcd" },
+        "reality-opts": { "public-key": "A".repeat(43), "short-id": "abcd", "support-x25519mlkem768": true },
         "dialer-proxy": "Entry",
       }],
     });
@@ -121,7 +121,7 @@ describe("local subscription YAML route", () => {
     };
     mocks.generateSubscriptionYaml.mockResolvedValue({ status: "ok", data });
     const url = "https://local.test/api/subscriptions/same-token/config.yaml";
-    const agents = ["Clash.Meta/1.19.0", "Shadowrocket/2.2.93", "mihomo/1.19.0", "Shadowrocket/2.2.93", ""];
+    const agents = ["Clash.Meta/1.19.0", "Shadowrocket/2.2.93", "mihomo/1.19.0", "Shadowrocket/3488 CFNetwork/1 Darwin/22", ""];
 
     for (const userAgent of agents) {
       const response = await GET(new Request(url, { headers: { "User-Agent": userAgent } }), {
@@ -138,7 +138,9 @@ describe("local subscription YAML route", () => {
       if (userAgent.startsWith("Shadowrocket")) {
         const expected = yaml.load(source) as { proxies: Array<Record<string, unknown>> };
         expect(expected.proxies[0]["client-fingerprint"]).toBe("chrome120");
+        expect((expected.proxies[0]["reality-opts"] as Record<string, unknown>)["support-x25519mlkem768"]).toBe(true);
         expected.proxies[0]["client-fingerprint"] = "chrome140";
+        delete (expected.proxies[0]["reality-opts"] as Record<string, unknown>)["support-x25519mlkem768"];
         expect(yaml.load(body)).toEqual(expected);
       } else {
         expect(body).toBe(source);

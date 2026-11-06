@@ -50,4 +50,17 @@ The first probe recognized `client-fingerprint: chrome140` on fresh synthetic no
 | G | Omit only `reality-opts.support-x25519mlkem768` |
 | H | Add only `reality-opts.short-id` |
 
-All four contain `client-fingerprint: chrome140`. Results are pending. This fixture isolates parser hypotheses; it does not assert that mapping order or either Reality option is the cause. If E already imports Chrome140, continue investigating real-node identity reuse and differences in the complete configuration rather than changing these fields.
+All four contain `client-fingerprint: chrome140`.
+
+### Reported device result (2026-11-07)
+
+| Entry | Displayed TLS fingerprint |
+| --- | --- |
+| E | `Chrome120` |
+| F | `Chrome120` |
+| G | `Chrome140` |
+| H | `Chrome120` |
+
+Only omitting `reality-opts.support-x25519mlkem768` restored the selected Chrome140 profile in this Shadowrocket 2.2.93 import test. Reordering the fingerprint field or adding a short-id did not resolve it. The response adapter therefore removes this Mihomo option from matching VLESS Reality nodes only for Shadowrocket and retains `client-fingerprint: chrome140`. Other Reality options and all non-Shadowrocket responses remain intact.
+
+This is a device import result for synthetic nodes, not a packet-level verification of the TLS handshake or a connectivity result. Validate a real subscription after deployment before claiming the compatibility issue is fully resolved.

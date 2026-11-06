@@ -26,10 +26,25 @@ function updateRealityNodes(nodes: unknown, override?: unknown): boolean {
     delete override["client-fingerprint"];
     changed = true;
   }
-  for (const node of realityNodes) {
-    if (node["client-fingerprint"] === "chrome140") continue;
-    node["client-fingerprint"] = "chrome140";
-    changed = true;
+  for (let index = 0; index < nodes.length; index += 1) {
+    const node = nodes[index];
+    if (!isVlessReality(node)) continue;
+    const reality = node["reality-opts"] as Mapping;
+    let nextNode = node;
+    if (Object.hasOwn(reality, "support-x25519mlkem768")) {
+      // This Mihomo option overrides the selected profile in Shadowrocket 2.2.93.
+      // Copy both mappings so YAML aliases cannot change other provider definitions.
+      const nextReality = { ...reality };
+      delete nextReality["support-x25519mlkem768"];
+      nextNode = { ...nextNode, "reality-opts": nextReality };
+    }
+    if (nextNode["client-fingerprint"] !== "chrome140") {
+      nextNode = { ...nextNode, "client-fingerprint": "chrome140" };
+    }
+    if (nextNode !== node) {
+      nodes[index] = nextNode;
+      changed = true;
+    }
   }
   return changed;
 }
