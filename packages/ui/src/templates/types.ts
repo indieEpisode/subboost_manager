@@ -9,6 +9,8 @@ export interface Template {
   isEngaged?: boolean;
   isOfficial?: boolean;
   isPublic?: boolean;
+  isDefault?: boolean;
+  isOwner?: boolean;
   proxyGroupCount?: number | null;
   ruleCount?: number | null;
 }

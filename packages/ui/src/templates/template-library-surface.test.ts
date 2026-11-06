@@ -398,6 +398,74 @@ describe("TemplateLibrarySurface", () => {
     expect(setters[6]).toHaveBeenCalledWith(true);
   });
 
+  it("publishes and withdraws owned templates and leaves state intact on failure", async () => {
+    const owned = { ...templates[1], isOwner: true, isDefault: false, isPublic: false };
+    const setTemplateDefault = vi.fn(async (_id: string, _isDefault: boolean) => undefined);
+    const adapter = createAdapter({ allowPublicTemplates: false, allowDefaultTemplates: true, setTemplateDefault });
+    const published = renderSurface(adapter, { 2: "my", 3: [owned] });
+    expect(mocks.captures.cards[0].showVisibility).toBe(true);
+    mocks.captures.cards[0].onDefaultChange();
+    await flushPromises();
+    expect(setTemplateDefault).toHaveBeenCalledWith("tpl-config", true);
+    expect((published.setters[3] as any).lastValue).toEqual([expect.objectContaining({ isDefault: true, isPublic: true })]);
+    expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ title: "已添加到默认模板，所有用户均可使用" }));
+
+    const withdrawn = renderSurface(adapter, { 2: "my", 3: [{ ...owned, isDefault: true, isPublic: true }] });
+    mocks.captures.cards[0].onDefaultChange();
+    await flushPromises();
+    expect(setTemplateDefault).toHaveBeenLastCalledWith("tpl-config", false);
+    expect((withdrawn.setters[3] as any).lastValue).toEqual([expect.objectContaining({ isDefault: false, isPublic: false })]);
+
+    setTemplateDefault.mockRejectedValueOnce(new Error("Publication failed"));
+    const failed = renderSurface(adapter, { 2: "my", 3: [owned] });
+    mocks.captures.cards[0].onDefaultChange();
+    await flushPromises();
+    expect(failed.setters[3]).not.toHaveBeenCalled();
+    expect(mocks.toast).toHaveBeenCalledWith({ title: "Publication failed", variant: "destructive" });
+  });
+
+  it("hides publication from non-admins, other owners, and default cards", () => {
+    const adapter = createAdapter({ allowDefaultTemplates: true, setTemplateDefault: vi.fn() });
+    const owned = { ...templates[1], isOwner: true };
+    renderSurface(adapter, { 2: "default", 3: [owned] });
+    expect(mocks.captures.cards[0].onDefaultChange).toBeUndefined();
+    renderSurface(adapter, { 2: "my", 3: [{ ...owned, isOwner: false }] });
+    expect(mocks.captures.cards[0].onDefaultChange).toBeUndefined();
+
+    mocks.userStore.user.isAdmin = false;
+    renderSurface(adapter, { 2: "my", 3: [owned] });
+    expect(mocks.captures.cards[0].onDefaultChange).toBeUndefined();
+    expect(mocks.captures.uploadDialog.userIsAdmin).toBe(false);
+  });
+
+  it("prevents duplicate publication while a request is pending", async () => {
+    let complete!: () => void;
+    const setTemplateDefault = vi.fn(() => new Promise<void>((resolve) => { complete = resolve; }));
+    const adapter = createAdapter({ setTemplateDefault });
+    renderSurface(adapter, { 2: "my", 3: [{ ...templates[1], isOwner: true }] });
+    const onDefaultChange = mocks.captures.cards[0].onDefaultChange;
+    onDefaultChange();
+    onDefaultChange();
+    expect(setTemplateDefault).toHaveBeenCalledTimes(1);
+    complete();
+    await flushPromises();
+  });
+
+  it("supports default publication on upload when public catalog controls are disabled", async () => {
+    const adapter = createAdapter({ allowPublicTemplates: false, allowDefaultTemplates: true });
+    renderSurface(adapter, { 6: true, 7: "Shared", 10: true });
+    expect(mocks.captures.uploadDialog.userIsAdmin).toBe(true);
+    expect(mocks.captures.uploadDialog.showVisibilityControls).toBe(false);
+    await mocks.captures.uploadDialog.onUpload();
+    expect(adapter.uploadTemplate).toHaveBeenCalledWith(expect.objectContaining({ isOfficial: true }));
+    expect(adapter.loadTemplates).toHaveBeenCalledWith("default");
+
+    mocks.userStore.user.isAdmin = false;
+    renderSurface(adapter, { 6: true, 7: "Private", 10: true });
+    await mocks.captures.uploadDialog.onUpload();
+    expect(adapter.uploadTemplate.mock.lastCall[0]).not.toHaveProperty("isOfficial");
+  });
+
   it("runs mount, upload query, load, and search effects", async () => {
     const timerId = 123 as unknown as number;
     const setTimeoutMock = vi.fn((handler: () => void) => {

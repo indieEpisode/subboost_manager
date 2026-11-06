@@ -19,6 +19,7 @@ type LocalTemplateRow = {
   name: string;
   description: string | null;
   encryptedConfig: string;
+  isDefault: boolean;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -33,6 +34,7 @@ export type LocalTemplateSummary = {
   tags: string[];
   isOfficial: boolean;
   isPublic: boolean;
+  isDefault: boolean;
   isOwner?: boolean;
   proxyGroupCount: number | null;
   ruleCount: number | null;
@@ -62,10 +64,11 @@ function builtinSummaries(): LocalTemplateSummary[] {
     description: template.description,
     proxyGroupCount: template.groupCount,
     ruleCount: template.ruleCount,
+    isDefault: true,
   }));
 }
 
-function formatLocalTemplate(row: LocalTemplateRow): LocalTemplateSummary {
+function formatLocalTemplate(row: LocalTemplateRow, viewerId: string | null): LocalTemplateSummary {
   const config = decryptJsonObject(row.encryptedConfig);
   const proxyGroupCount = Array.isArray(config.enabledProxyGroups) ? config.enabledProxyGroups.length : null;
   const ruleCount = Array.isArray(config.ruleOrder) ? config.ruleOrder.length : null;
@@ -78,8 +81,9 @@ function formatLocalTemplate(row: LocalTemplateRow): LocalTemplateSummary {
     createdAt: row.createdAt.toISOString(),
     tags: ["本地"],
     isOfficial: false,
-    isPublic: false,
-    isOwner: true,
+    isPublic: row.isDefault,
+    isDefault: row.isDefault,
+    isOwner: row.ownerId === viewerId,
     proxyGroupCount,
     ruleCount,
   };
@@ -96,14 +100,20 @@ export async function listTemplates(
   tab: LocalTemplateTab,
   ids: string[] = []
 ): Promise<LocalTemplateSummary[]> {
-  if (tab === "default") return filterByIds(builtinSummaries(), ids);
+  if (tab === "default") {
+    const rows = await prisma.localTemplate.findMany({
+      where: { isDefault: true, ...(ids.length > 0 ? { id: { in: ids } } : {}) },
+      orderBy: { updatedAt: "desc" },
+    });
+    return [...filterByIds(builtinSummaries(), ids), ...rows.map((row) => formatLocalTemplate(row, ownerId))];
+  }
   if (!ownerId) throw new Error("Authentication required.");
 
   const rows = await prisma.localTemplate.findMany({
     where: { ownerId, ...(ids.length > 0 ? { id: { in: ids } } : {}) },
     orderBy: { updatedAt: "desc" },
   });
-  return rows.map(formatLocalTemplate);
+  return rows.map((row) => formatLocalTemplate(row, ownerId));
 }
 
 export async function getTemplateDetail(ownerId: string | null, id: string): Promise<LocalTemplateDetail | null> {
@@ -119,9 +129,13 @@ export async function getTemplateDetail(ownerId: string | null, id: string): Pro
     };
   }
 
-  if (!ownerId) throw new Error("Authentication required.");
-  const row = await prisma.localTemplate.findFirst({ where: { id, ownerId } });
-  if (!row) return null;
+  const row = await prisma.localTemplate.findFirst({
+    where: { id, ...(ownerId ? { OR: [{ ownerId }, { isDefault: true }] } : { isDefault: true }) },
+  });
+  if (!row) {
+    if (!ownerId) throw new Error("Authentication required.");
+    return null;
+  }
   return {
     id: row.id,
     name: row.name,
@@ -131,7 +145,11 @@ export async function getTemplateDetail(ownerId: string | null, id: string): Pro
   };
 }
 
-export async function createTemplate(ownerId: string, body: unknown): Promise<LocalTemplateSummary> {
+export async function createTemplate(
+  ownerId: string,
+  body: unknown,
+  options: { isDefault?: boolean } = {}
+): Promise<LocalTemplateSummary> {
   const payload = asRecord(body);
   if (!payload) throw new Error("Invalid request body.");
 
@@ -147,9 +165,18 @@ export async function createTemplate(ownerId: string, body: unknown): Promise<Lo
       name,
       description: asString(payload.description).slice(0, 500),
       encryptedConfig: encryptJson(validated.config),
+      isDefault: options.isDefault === true,
     },
   });
-  return formatLocalTemplate(row);
+  return formatLocalTemplate(row, ownerId);
+}
+
+export async function setTemplateDefault(ownerId: string, id: string, isDefault: boolean): Promise<boolean> {
+  const result = await prisma.localTemplate.updateMany({
+    where: { id, ownerId },
+    data: { isDefault },
+  });
+  return result.count > 0;
 }
 
 export async function deleteTemplate(ownerId: string, id: string): Promise<boolean> {

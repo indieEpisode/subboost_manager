@@ -238,6 +238,25 @@ describe("local app pages and adapters", () => {
     await expect(mocks.dashboardAdapter.resetSubscriptionLink("sub 1", "old")).rejects.toThrow("stale link");
   });
 
+  it("connects one-click default publication and upload to the local API", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => Response.json({}));
+    vi.stubGlobal("fetch", fetchMock);
+    renderToStaticMarkup(React.createElement(TemplatesPage));
+    const adapter = mocks.templateAdapter;
+    expect(adapter.allowDefaultTemplates).toBe(true);
+    await adapter.setTemplateDefault("tpl 1", true);
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/templates/tpl%201", {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isDefault: true }),
+    });
+    await adapter.setTemplateDefault("tpl 1", false);
+    expect(JSON.parse(fetchMock.mock.lastCall![1]!.body as string)).toEqual({ isDefault: false });
+
+    await adapter.uploadTemplate({ name: "Shared", config: {}, isOfficial: true, isPublic: true });
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/templates", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ name: "Shared", config: {}, isPublic: true, isDefault: true }),
+    }));
+  });
+
   it("renders local settings for anonymous and authenticated states", async () => {
     let html = renderToStaticMarkup(React.createElement(SettingsPage));
     expect(html).toContain("未登录");

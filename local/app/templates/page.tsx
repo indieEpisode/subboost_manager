@@ -26,6 +26,7 @@ const localTemplateAdapter: TemplateLibraryAdapter = {
   allowEngagement: false,
   allowDelete: true,
   allowPublicTemplates: false,
+  allowDefaultTemplates: true,
   uploadSearchParam: true,
   loadTemplates: async (tab: TabValue) => {
     const data = await readJsonResponse<TemplateListResponse>(
@@ -39,17 +40,24 @@ const localTemplateAdapter: TemplateLibraryAdapter = {
     const data = await readJsonResponse<TemplateDetailResponse>(response);
     return data.template ?? null;
   },
-  uploadTemplate: async (payload) => {
+  uploadTemplate: async ({ isOfficial, ...payload }) => {
     await readJsonResponse(
       await fetch("/api/templates", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, isDefault: isOfficial === true }),
       })
     );
   },
   deleteTemplate: async (id: string) => {
     await readJsonResponse(await fetch(`/api/templates?id=${encodeURIComponent(id)}`, { method: "DELETE" }));
+  },
+  setTemplateDefault: async (id: string, isDefault: boolean) => {
+    await readJsonResponse(await fetch(`/api/templates/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isDefault }),
+    }));
   },
 };
 

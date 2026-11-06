@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
       findFirst: vi.fn(),
       create: vi.fn(),
       delete: vi.fn(),
+      updateMany: vi.fn(),
     },
   },
 }));
@@ -37,7 +38,7 @@ vi.mock("./crypto", () => ({
 }));
 vi.mock("./prisma", () => ({ prisma: mocks.prisma }));
 
-import { createTemplate, deleteTemplate, getTemplateDetail, listTemplates } from "./template-service";
+import { createTemplate, deleteTemplate, getTemplateDetail, listTemplates, setTemplateDefault } from "./template-service";
 
 function row(overrides: Record<string, unknown> = {}) {
   return {
@@ -46,6 +47,7 @@ function row(overrides: Record<string, unknown> = {}) {
     name: "Local Template",
     description: "desc",
     encryptedConfig: "encrypted",
+    isDefault: false,
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
     updatedAt: new Date("2026-01-02T00:00:00.000Z"),
     ...overrides,
@@ -76,6 +78,8 @@ describe("local template service", () => {
     mocks.decryptJsonObject.mockReturnValue({ enabledProxyGroups: ["auto"], ruleOrder: ["MATCH"] });
     mocks.encryptJson.mockReturnValue("encrypted-new");
     mocks.validateSubBoostTemplateConfig.mockReturnValue({ ok: true, config: { rules: [] } });
+    mocks.prisma.localTemplate.findMany.mockResolvedValue([]);
+    mocks.prisma.localTemplate.findFirst.mockResolvedValue(null);
   });
 
   it("lists built-in templates and owner templates", async () => {
@@ -103,6 +107,7 @@ describe("local template service", () => {
         tags: ["本地"],
         isOfficial: false,
         isPublic: false,
+        isDefault: false,
         isOwner: true,
         proxyGroupCount: 1,
         ruleCount: 1,
@@ -165,7 +170,69 @@ describe("local template service", () => {
         name: "Template",
         description: "x".repeat(500),
         encryptedConfig: "encrypted-new",
+        isDefault: false,
       },
+    });
+  });
+
+  it("includes published templates in the default list for every viewer, with accurate ownership", async () => {
+    mocks.prisma.localTemplate.findMany.mockResolvedValue([row({ isDefault: true })]);
+    for (const viewerId of [null, "owner-1", "other-user"]) {
+      const templates = await listTemplates(viewerId, "default", ["local-1"]);
+      expect(templates).toEqual([expect.objectContaining({
+        id: "local-1", isDefault: true, isPublic: true, isOfficial: false, isOwner: viewerId === "owner-1",
+      })]);
+      expect(mocks.prisma.localTemplate.findMany).toHaveBeenLastCalledWith({
+        where: { isDefault: true, id: { in: ["local-1"] } },
+        orderBy: { updatedAt: "desc" },
+      });
+    }
+    const templates = await listTemplates(null, "default");
+    expect(templates.map((template) => template.id)).toEqual(["builtin-minimal", "builtin-standard", "local-1"]);
+  });
+
+  it("allows anyone to read published details while retaining owner access to private templates", async () => {
+    mocks.prisma.localTemplate.findFirst.mockResolvedValue(row({ isDefault: true }));
+    for (const viewerId of [null, "other-user", "owner-1"]) {
+      await expect(getTemplateDetail(viewerId, "local-1")).resolves.toMatchObject({ id: "local-1", kind: "config" });
+      expect(mocks.prisma.localTemplate.findFirst).toHaveBeenLastCalledWith({
+        where: {
+          id: "local-1",
+          ...(viewerId ? { OR: [{ ownerId: viewerId }, { isDefault: true }] } : { isDefault: true }),
+        },
+      });
+    }
+
+    mocks.prisma.localTemplate.findFirst.mockResolvedValue(null);
+    await expect(getTemplateDetail("other-user", "local-1")).resolves.toBeNull();
+    await expect(getTemplateDetail(null, "local-1")).rejects.toThrow("Authentication required.");
+  });
+
+  it("publishes and withdraws only owned templates without copying them", async () => {
+    mocks.prisma.localTemplate.updateMany.mockResolvedValue({ count: 1 });
+    for (const isDefault of [true, false, false]) {
+      await expect(setTemplateDefault("owner-1", "local-1", isDefault)).resolves.toBe(true);
+      expect(mocks.prisma.localTemplate.updateMany).toHaveBeenLastCalledWith({
+        where: { id: "local-1", ownerId: "owner-1" }, data: { isDefault },
+      });
+    }
+    mocks.prisma.localTemplate.updateMany.mockResolvedValue({ count: 0 });
+    await expect(setTemplateDefault("other-user", "local-1", false)).resolves.toBe(false);
+    await expect(setTemplateDefault("owner-1", "builtin-minimal", true)).resolves.toBe(false);
+    expect(mocks.prisma.localTemplate.create).not.toHaveBeenCalled();
+  });
+
+  it("publishes new templates only through an authorized service option", async () => {
+    mocks.prisma.localTemplate.create.mockResolvedValue(row({ isDefault: true }));
+    await expect(createTemplate("owner-1", { name: "Shared", config: {} }, { isDefault: true }))
+      .resolves.toMatchObject({ isDefault: true, isPublic: true, isOwner: true });
+    expect(mocks.prisma.localTemplate.create).toHaveBeenLastCalledWith({
+      data: expect.objectContaining({ ownerId: "owner-1", isDefault: true }),
+    });
+
+    await createTemplate("owner-1", { name: "Private", config: {}, isDefault: true, isPublic: true });
+    expect(mocks.prisma.localTemplate.create).toHaveBeenLastCalledWith({
+      data: expect.objectContaining({ isDefault: false }),
     });
   });
 

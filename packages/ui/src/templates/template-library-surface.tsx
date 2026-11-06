@@ -46,10 +46,12 @@ export type TemplateLibraryAdapter = {
   allowEngagement?: boolean;
   allowDelete?: boolean;
   allowPublicTemplates?: boolean;
+  allowDefaultTemplates?: boolean;
   uploadSearchParam?: boolean;
   loadTemplates: (tab: TabValue) => Promise<Template[]>;
   loadTemplateDetail: (id: string) => Promise<TemplateDetail | null>;
   deleteTemplate?: (id: string) => Promise<void>;
+  setTemplateDefault?: (id: string, isDefault: boolean) => Promise<void>;
   toggleTemplateEngagement?: (id: string) => Promise<{ engagementCount: number; isEngaged: boolean }>;
   uploadTemplate?: (payload: UploadTemplatePayload) => Promise<void>;
 };
@@ -114,6 +116,8 @@ function TemplateLibraryInner({ adapter }: Props) {
   const [isUploading, setIsUploading] = React.useState(false);
   const [uploadMode, setUploadMode] = React.useState<"config" | "yaml">("config");
   const [uploadYamlContent, setUploadYamlContent] = React.useState("");
+  const [updatingDefaultIds, setUpdatingDefaultIds] = React.useState<Set<string>>(new Set());
+  const defaultUpdates = React.useRef(new Set<string>());
   const interactions = adapter.interactions;
 
   React.useEffect(() => {
@@ -122,6 +126,8 @@ function TemplateLibraryInner({ adapter }: Props) {
 
   const canUpload = Boolean(user && adapter.allowUpload !== false && adapter.uploadTemplate);
   const allowPublicTemplates = adapter.allowPublicTemplates !== false;
+  const allowDefaultTemplates = adapter.allowDefaultTemplates ?? allowPublicTemplates;
+  const canPublishDefault = Boolean(user?.isAdmin && allowDefaultTemplates);
 
   const openUploadDialog = React.useCallback((entry?: "templatesPage") => {
     if (!canUpload) return;
@@ -226,7 +232,9 @@ function TemplateLibraryInner({ adapter }: Props) {
   const handleDeleteTemplate = async (templateId: string) => {
     if (!user || !adapter.deleteTemplate) return;
     const ok = await confirmDialog({
-      title: "确定要删除该模板吗？此操作不可撤销。",
+      title: templates.find((item) => item.id === templateId)?.isDefault
+        ? "确定要删除该模板吗？删除后将从所有用户的默认模板中移除，此操作不可撤销。"
+        : "确定要删除该模板吗？此操作不可撤销。",
       confirmText: "删除",
       variant: "destructive",
     });
@@ -240,6 +248,25 @@ function TemplateLibraryInner({ adapter }: Props) {
     }
   };
 
+  const handleDefaultChange = async (item: Template) => {
+    if (!canPublishDefault || !item.isOwner || !adapter.setTemplateDefault || defaultUpdates.current.has(item.id)) return;
+    const isDefault = !item.isDefault;
+    defaultUpdates.current.add(item.id);
+    setUpdatingDefaultIds(new Set(defaultUpdates.current));
+    try {
+      await adapter.setTemplateDefault(item.id, isDefault);
+      setTemplates((prev) => prev.map((template) =>
+        template.id === item.id ? { ...template, isDefault, isPublic: isDefault } : template
+      ));
+      toast({ title: isDefault ? "已添加到默认模板，所有用户均可使用" : "已从默认模板移除，仅自己可用", variant: "success" });
+    } catch (error) {
+      toast({ title: error instanceof Error ? error.message : "更新默认模板失败", variant: "destructive" });
+    } finally {
+      defaultUpdates.current.delete(item.id);
+      setUpdatingDefaultIds(new Set(defaultUpdates.current));
+    }
+  };
+
   const allTags = Array.from(new Set(templates.flatMap((t) => t.tags)));
   const filteredTemplates = templates.filter((item) => {
     const matchesSearch =
@@ -247,7 +274,8 @@ function TemplateLibraryInner({ adapter }: Props) {
       item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       item.description.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesTag = !selectedTag || item.tags.includes(selectedTag);
-    return matchesSearch && matchesTag;
+    const matchesTab = activeTab !== "default" || !adapter.setTemplateDefault || item.isDefault !== false;
+    return matchesSearch && matchesTag && matchesTab;
   });
 
   React.useEffect(() => {
@@ -293,6 +321,7 @@ function TemplateLibraryInner({ adapter }: Props) {
 
     setIsUploading(true);
     try {
+      const asDefault = canPublishDefault && uploadAsDefault;
       await adapter.uploadTemplate({
         name: uploadName,
         description: uploadDescription,
@@ -318,13 +347,13 @@ function TemplateLibraryInner({ adapter }: Props) {
           cnIpNoResolve,
           experimentalCnUseCnRuleSet,
         } satisfies SubBoostTemplateConfig,
-        isPublic: allowPublicTemplates ? (uploadAsDefault ? true : uploadIsPublic) : false,
-        ...(uploadAsDefault ? { isOfficial: true } : {}),
+        isPublic: asDefault || (allowPublicTemplates && uploadIsPublic),
+        ...(asDefault ? { isOfficial: true } : {}),
       });
 
       toast({ title: "模板上传成功！", variant: "success" });
       setUploadDialog(false);
-      if (uploadAsDefault) {
+      if (asDefault) {
         setActiveTab("default");
         await loadTemplates("default");
       } else {
@@ -408,10 +437,14 @@ function TemplateLibraryInner({ adapter }: Props) {
                     onEngage={() => void handleEngagement(item.id)}
                     onApply={() => void handleApplyTemplate(item.id)}
                     onDelete={() => void handleDeleteTemplate(item.id)}
+                    onDefaultChange={tab === "my" && canPublishDefault && item.isOwner && adapter.setTemplateDefault
+                      ? () => void handleDefaultChange(item)
+                      : undefined}
+                    isUpdatingDefault={updatingDefaultIds.has(item.id)}
                     isLoggedIn={!!user}
                     isApplying={applyingId === item.id}
                     showDelete={tab === "my" && adapter.allowDelete !== false && Boolean(adapter.deleteTemplate)}
-                    showVisibility={tab === "my" && allowPublicTemplates}
+                    showVisibility={tab === "my" && (allowPublicTemplates || allowDefaultTemplates)}
                     showEngagement={adapter.allowEngagement !== false}
                   />
                 ))}
@@ -425,7 +458,7 @@ function TemplateLibraryInner({ adapter }: Props) {
         <TemplateUploadDialog
           open={uploadDialog}
           onOpenChange={setUploadDialog}
-          userIsAdmin={Boolean(user?.isAdmin)}
+          userIsAdmin={canPublishDefault}
           name={uploadName}
           onNameChange={setUploadName}
           description={uploadDescription}

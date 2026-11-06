@@ -56,9 +56,18 @@ export async function POST(request: Request) {
     if (!parsedBody.value || typeof parsedBody.value !== "object" || Array.isArray(parsedBody.value)) {
       return apiError("Invalid JSON body.", "BAD_REQUEST", 400);
     }
+    const payload = parsedBody.value as Record<string, unknown>;
+    if (payload.isDefault !== undefined && typeof payload.isDefault !== "boolean") {
+      return apiError("Invalid default template setting.", "VALIDATION_ERROR", 400);
+    }
+    if (payload.isDefault === true && admin.role !== "admin") {
+      return apiError("需要管理员权限。", "FORBIDDEN", 403);
+    }
 
     try {
-      const template = await createTemplate(admin.id, parsedBody.value);
+      const template = payload.isDefault === true
+        ? await createTemplate(admin.id, payload, { isDefault: true })
+        : await createTemplate(admin.id, payload);
       return json({ template }, 201);
     } catch (error) {
       return apiError(error instanceof Error ? error.message : "Unable to create template.", "BAD_REQUEST", 400);

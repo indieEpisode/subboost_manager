@@ -160,4 +160,22 @@ describe("TemplateCard", () => {
     expect(mocks.captures.buttons.some((button) => button.title === "删除模板")).toBe(false);
     expect(mocks.captures.buttons.some((button) => button.title === "登录后可收藏")).toBe(false);
   });
+
+  it("offers one-click publication and withdrawal with a pending state", () => {
+    const onDefaultChange = vi.fn();
+    const privateCard = renderCard({ onDefaultChange });
+    expect(privateCard.html).toContain("添加到默认模板");
+    mocks.captures.buttons.find((button) => button.title === "添加后所有用户均可查看和使用").onClick();
+    expect(onDefaultChange).toHaveBeenCalledOnce();
+
+    const sharedCard = renderCard({
+      template: { ...baseTemplate, isPublic: true, isDefault: true }, onDefaultChange,
+    });
+    expect(sharedCard.html).toContain("默认模板 · 所有人可用");
+    expect(sharedCard.html).toContain("从默认模板移除");
+
+    renderCard({ onDefaultChange, isUpdatingDefault: true });
+    expect(mocks.captures.buttons.find((button) => button.title === "添加后所有用户均可查看和使用").disabled).toBe(true);
+    expect(mocks.captures.buttons.find((button) => button.title === "删除模板").disabled).toBe(true);
+  });
 });

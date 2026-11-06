@@ -27,6 +27,8 @@ export function TemplateCard({
   onEngage,
   onApply,
   onDelete,
+  onDefaultChange,
+  isUpdatingDefault = false,
   isLoggedIn,
   isApplying,
   showDelete,
@@ -41,6 +43,8 @@ export function TemplateCard({
   onEngage: () => void;
   onApply: () => void;
   onDelete?: () => void;
+  onDefaultChange?: () => void;
+  isUpdatingDefault?: boolean;
   isLoggedIn: boolean;
   isApplying: boolean;
   showDelete: boolean;
@@ -63,6 +67,7 @@ export function TemplateCard({
                 label="删除模板"
                 variant="outline"
                 onClick={onDelete}
+                disabled={isUpdatingDefault}
                 className="h-8 w-8 border-ink/10 hover:border-red-500/40 hover:text-red-400"
               >
                 <Trash2 className="h-4 w-4" />
@@ -119,7 +124,7 @@ export function TemplateCard({
               {template.isPublic ? (
                 <>
                   <Globe className="h-3.5 w-3.5 text-green-400" />
-                  公开
+                  {template.isDefault ? "默认模板 · 所有人可用" : "公开"}
                 </>
               ) : (
                 <>
@@ -130,6 +135,20 @@ export function TemplateCard({
             </span>
           )}
         </div>
+        {onDefaultChange && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mt-3 w-full gap-2"
+            onClick={onDefaultChange}
+            disabled={!isLoggedIn || isUpdatingDefault}
+            title={template.isDefault ? "撤回后仅自己可用" : "添加后所有用户均可查看和使用"}
+          >
+            {isUpdatingDefault ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe className="h-4 w-4" />}
+            {isUpdatingDefault ? "更新中" : template.isDefault ? "从默认模板移除" : "添加到默认模板"}
+          </Button>
+        )}
       </CardContent>
     </Card>
   );

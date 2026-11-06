@@ -6,6 +6,7 @@ import {
   deleteTemplate,
   getTemplateDetail,
   listTemplates,
+  setTemplateDefault,
 } from "@local/lib/template-service";
 import * as itemRoute from "../app/api/templates/[id]/route";
 import * as collectionRoute from "../app/api/templates/route";
@@ -19,9 +20,10 @@ vi.mock("@local/lib/template-service", () => ({
   deleteTemplate: vi.fn(),
   getTemplateDetail: vi.fn(),
   listTemplates: vi.fn(),
+  setTemplateDefault: vi.fn(),
 }));
 
-const admin = { id: "admin-1", username: "root" };
+const admin = { id: "admin-1", username: "root", role: "admin" as const };
 const template = {
   id: "tpl-1",
   name: "Local",
@@ -32,6 +34,7 @@ const template = {
   tags: ["本地"],
   isOfficial: false,
   isPublic: false,
+  isDefault: false,
   proxyGroupCount: 2,
   ruleCount: 3,
 };
@@ -51,6 +54,7 @@ beforeEach(() => {
   vi.mocked(getTemplateDetail).mockResolvedValue({ ...template, kind: "config", config: { template: "standard" } } as never);
   vi.mocked(createTemplate).mockResolvedValue(template);
   vi.mocked(deleteTemplate).mockResolvedValue(true);
+  vi.mocked(setTemplateDefault).mockResolvedValue(true);
 });
 
 describe("local template routes", () => {
@@ -186,8 +190,11 @@ describe("local template routes", () => {
       jsonRequest("http://local.test/api/templates", { name: "Local", config: { template: "standard" } })
     );
     const deleteResponse = await collectionRoute.DELETE(new Request("http://local.test/api/templates?id=tpl-1"));
+    const publishResponse = await itemRoute.PATCH(jsonRequest("http://local.test/api/templates/tpl-1", { isDefault: true }), {
+      params: Promise.resolve({ id: "tpl-1" }),
+    });
 
-    for (const response of [createResponse, deleteResponse]) {
+    for (const response of [createResponse, deleteResponse, publishResponse]) {
       expect(response.status).toBe(401);
       await expect(response.json()).resolves.toEqual({
         error: "Authentication required.",
@@ -197,6 +204,65 @@ describe("local template routes", () => {
 
     expect(createTemplate).not.toHaveBeenCalled();
     expect(deleteTemplate).not.toHaveBeenCalled();
+    expect(setTemplateDefault).not.toHaveBeenCalled();
+  });
+
+  it("allows admins to publish and withdraw their existing templates", async () => {
+    for (const isDefault of [true, false]) {
+      const response = await itemRoute.PATCH(jsonRequest("http://local.test/api/templates/tpl-1", { isDefault }), {
+        params: Promise.resolve({ id: "tpl-1" }),
+      });
+      expect(response.status).toBe(200);
+      expect(setTemplateDefault).toHaveBeenLastCalledWith("admin-1", "tpl-1", isDefault);
+    }
+  });
+
+  it("rejects invalid publication settings and unowned or missing templates", async () => {
+    for (const body of [null, [], {}, { isDefault: "true" }, { isDefault: 1 }]) {
+      const response = await itemRoute.PATCH(jsonRequest("http://local.test/api/templates/tpl-1", body), {
+        params: Promise.resolve({ id: "tpl-1" }),
+      });
+      expect(response.status).toBe(400);
+    }
+    expect(setTemplateDefault).not.toHaveBeenCalled();
+
+    vi.mocked(setTemplateDefault).mockResolvedValueOnce(false);
+    const response = await itemRoute.PATCH(jsonRequest("http://local.test/api/templates/other", { isDefault: true }), {
+      params: Promise.resolve({ id: "other" }),
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("publishes new templates when explicitly requested by an admin", async () => {
+    const payload = { name: "Shared", config: {}, isDefault: true };
+    const response = await collectionRoute.POST(jsonRequest("http://local.test/api/templates", payload));
+    expect(response.status).toBe(201);
+    expect(createTemplate).toHaveBeenCalledWith("admin-1", payload, { isDefault: true });
+
+    const invalid = await collectionRoute.POST(jsonRequest("http://local.test/api/templates", { ...payload, isDefault: "false" }));
+    expect(invalid.status).toBe(400);
+  });
+
+  it("lets ordinary users read defaults but rejects publication through either write route", async () => {
+    vi.mocked(getCurrentAdmin).mockResolvedValue({ ...admin, id: "user-1", role: "user" });
+    const listResponse = await collectionRoute.GET(new Request("http://local.test/api/templates?type=default"));
+    expect(listResponse.status).toBe(200);
+    expect(listTemplates).toHaveBeenCalledWith("user-1", "default", []);
+
+    const detailResponse = await itemRoute.GET(new Request("http://local.test/api/templates/tpl-1"), {
+      params: Promise.resolve({ id: "tpl-1" }),
+    });
+    expect(detailResponse.status).toBe(200);
+    expect(getTemplateDetail).toHaveBeenCalledWith("user-1", "tpl-1");
+
+    const publishResponse = await itemRoute.PATCH(jsonRequest("http://local.test/api/templates/tpl-1", { isDefault: true }), {
+      params: Promise.resolve({ id: "tpl-1" }),
+    });
+    const createResponse = await collectionRoute.POST(jsonRequest("http://local.test/api/templates", { name: "Shared", isDefault: true }));
+    expect(publishResponse.status).toBe(403);
+    expect(createResponse.status).toBe(403);
+    expect(setTemplateDefault).not.toHaveBeenCalled();
+    expect(createTemplate).not.toHaveBeenCalled();
   });
 
   it("keeps optional template reads but returns auth errors when private reads reject unauthenticated access", async () => {
