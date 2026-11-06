@@ -141,6 +141,7 @@ describe("public local services remaining branch coverage", () => {
     mocks.decryptJsonObject.mockReturnValue({ enabledProxyGroups: "bad", ruleOrder: "bad" });
     mocks.encryptJson.mockImplementation((value) => ({ encrypted: value }));
     mocks.validateSubBoostTemplateConfig.mockReturnValue({ ok: true, config: { template: "minimal" } });
+    mocks.prisma.localTemplate.findMany.mockResolvedValue([]);
 
     mocks.createCronUpdateAccumulator.mockImplementation((total: number) => ({ total, outcomes: [], skipped: 0 }));
     mocks.recordCronUpdateSkipped.mockImplementation((acc) => {
