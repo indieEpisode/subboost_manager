@@ -36,3 +36,18 @@ This confirms that the current `client-fingerprint: chrome140` field/value is re
 This run does not establish how an existing subscription updates saved nodes, what User-Agent a particular subscription sends, or whether a real proxy connection works. If an existing subscription still displays Chrome120, compare a newly added copy of the real subscription with its old entries and inspect the actual download request before changing server output.
 
 Remove this diagnostic subscription after testing.
+
+## Production-shaped import probe
+
+The first probe recognized `client-fingerprint: chrome140` on fresh synthetic nodes, but a fresh subscription using real nodes was still reported as Chrome120. A subsequent observation of the actual request confirmed a complete Shadowrocket User-Agent word; replaying that User-Agent returned chrome140. This rules out the client-name matching hypothesis for that request, but does not yet identify the import/update issue.
+
+`production-shape.yaml` uses new synthetic identities and mirrors the field order and structure of the affected generated nodes. Inspect E/F/G/H on import without editing or connecting them:
+
+| Entry | Difference from E |
+| --- | --- |
+| E | Baseline: `client-fingerprint` before `reality-opts`, ML-KEM option true, no short-id, certificate verification enabled |
+| F | Move only `client-fingerprint` to the end of the node mapping |
+| G | Omit only `reality-opts.support-x25519mlkem768` |
+| H | Add only `reality-opts.short-id` |
+
+All four contain `client-fingerprint: chrome140`. Results are pending. This fixture isolates parser hypotheses; it does not assert that mapping order or either Reality option is the cause. If E already imports Chrome140, continue investigating real-node identity reuse and differences in the complete configuration rather than changing these fields.

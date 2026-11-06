@@ -1,0 +1,75 @@
+# Import-only diagnostic; synthetic credentials and reserved .invalid hosts.
+# E: actual production field structure/order. F: fingerprint moved last.
+# G: omit ML-KEM option. H: include a short-id. Inspect, do not connect.
+proxies:
+  - name: TEST-E-production-order
+    type: vless
+    server: e.example.invalid
+    port: 443
+    uuid: 00000000-0000-4000-8000-000000000069
+    tls: true
+    servername: example.invalid
+    skip-cert-verify: false
+    client-fingerprint: chrome140
+    network: tcp
+    flow: xtls-rprx-vision
+    udp: true
+    reality-opts:
+      public-key: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE
+      support-x25519mlkem768: true
+  - name: TEST-F-fingerprint-last
+    type: vless
+    server: f.example.invalid
+    port: 443
+    uuid: 00000000-0000-4000-8000-000000000070
+    tls: true
+    servername: example.invalid
+    skip-cert-verify: false
+    network: tcp
+    flow: xtls-rprx-vision
+    udp: true
+    reality-opts:
+      public-key: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE
+      support-x25519mlkem768: true
+    client-fingerprint: chrome140
+  - name: TEST-G-without-mlkem-option
+    type: vless
+    server: g.example.invalid
+    port: 443
+    uuid: 00000000-0000-4000-8000-000000000071
+    tls: true
+    servername: example.invalid
+    skip-cert-verify: false
+    client-fingerprint: chrome140
+    network: tcp
+    flow: xtls-rprx-vision
+    udp: true
+    reality-opts:
+      public-key: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE
+  - name: TEST-H-with-short-id
+    type: vless
+    server: h.example.invalid
+    port: 443
+    uuid: 00000000-0000-4000-8000-000000000072
+    tls: true
+    servername: example.invalid
+    skip-cert-verify: false
+    client-fingerprint: chrome140
+    network: tcp
+    flow: xtls-rprx-vision
+    udp: true
+    reality-opts:
+      public-key: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE
+      support-x25519mlkem768: true
+      short-id: 0123456789abcdef
+proxy-groups:
+  - name: TEST-REALITY-SHAPE
+    type: select
+    proxies:
+      - DIRECT
+      - TEST-E-production-order
+      - TEST-F-fingerprint-last
+      - TEST-G-without-mlkem-option
+      - TEST-H-with-short-id
+rules:
+  - MATCH,DIRECT
