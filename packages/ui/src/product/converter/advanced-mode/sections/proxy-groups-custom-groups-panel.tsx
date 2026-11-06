@@ -37,6 +37,7 @@ import {
 import { ProxyGroupsModuleCard } from "./proxy-groups-module-card";
 import { GroupAdvancedSettingsDialog } from "./group-advanced-settings-dialog";
 import { findGroupListenerBinding } from "./group-listener-settings";
+import { CustomGroupBulkAddDialog } from "./custom-group-bulk-add-dialog";
 
 export function ProxyGroupsCustomGroupsPanel({
   advancedMode = false,
@@ -80,6 +81,7 @@ export function ProxyGroupsCustomGroupsPanel({
   const [editingCustomGroupDescription, setEditingCustomGroupDescription] = React.useState("");
   // 注意：新增 useState 追加在末尾，保持既有测试的 setter 索引稳定
   const [settingsGroupId, setSettingsGroupId] = React.useState<string | null>(null);
+  const [bulkAddGroupId, setBulkAddGroupId] = React.useState<string | null>(null);
   const interactions = useProductInteractionAdapter();
   const listenerConflictState = React.useMemo(
     () => ({ dnsYaml, mixedPort, listenerPorts, groupListeners }),
@@ -507,6 +509,7 @@ export function ProxyGroupsCustomGroupsPanel({
                 rulesCountOverride={totalRules}
                 advancedMode={advancedMode}
                 nodeCount={nodeCount}
+                onAddToGroups={() => setBulkAddGroupId(group.id)}
                 renderAdvancedContent={(content, count) => (
                   <ProxyGroupAdvancedPanel
                     target={{ kind: "custom", id: group.id, name: group.name }}
@@ -526,6 +529,9 @@ export function ProxyGroupsCustomGroupsPanel({
         </div>
       )}
 
+      {bulkAddGroupId && customProxyGroups.some((group) => group.id === bulkAddGroupId) && (
+        <CustomGroupBulkAddDialog key={bulkAddGroupId} groupId={bulkAddGroupId} onClose={() => setBulkAddGroupId(null)} />
+      )}
       {(() => {
         const settingsGroup = settingsGroupId
           ? customProxyGroups.find((group) => group.id === settingsGroupId)

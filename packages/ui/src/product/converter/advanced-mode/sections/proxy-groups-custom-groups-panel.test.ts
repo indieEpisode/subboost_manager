@@ -43,6 +43,7 @@ vi.mock("react", async (importOriginal) => {
 });
 
 vi.mock("lucide-react", () => ({
+  ListPlus: () => null,
   Check: () => null,
   ChevronDown: () => null,
   ChevronRight: () => null,
@@ -134,6 +135,12 @@ vi.mock("./group-advanced-settings-dialog", () => ({
     return null;
   },
 }));
+vi.mock("./custom-group-bulk-add-dialog", () => ({
+  CustomGroupBulkAddDialog: (props: any) => {
+    mocks.captures.bulkDialogs.push(props);
+    return null;
+  },
+}));
 
 import { ProxyGroupsCustomGroupsPanel } from "./proxy-groups-custom-groups-panel";
 
@@ -172,6 +179,7 @@ function renderPanel(overrides: Record<number, unknown> = {}) {
   mocks.captures.manualRows = [];
   mocks.captures.moveMenus = [];
   mocks.captures.settingsDialogs = [];
+  mocks.captures.bulkDialogs = [];
   try {
     const html = renderToStaticMarkup(React.createElement(ProxyGroupsCustomGroupsPanel));
     return { html, setters: stateMock.setters };
@@ -205,6 +213,21 @@ describe("ProxyGroupsCustomGroupsPanel", () => {
       addModuleRules: vi.fn(),
       setGroupListener: vi.fn(),
     };
+  });
+
+  it("opens the bulk dialog from the group action without toggling expansion", () => {
+    const { setters } = renderPanel();
+    const stopPropagation = vi.fn();
+    mocks.captures.buttons.find((button: any) => button.title === "添加到多个分流组").onClick({ stopPropagation });
+    expect(stopPropagation).toHaveBeenCalledOnce();
+    expect(setters[7]).toHaveBeenCalledWith("custom-1");
+    expect(setters[0]).not.toHaveBeenCalled();
+    renderPanel({ 7: "custom-1" });
+    expect(mocks.captures.bulkDialogs[0].groupId).toBe("custom-1");
+    mocks.captures.bulkDialogs[0].onClose();
+    expect(stateMock.setters[7]).toHaveBeenCalledWith(null);
+    renderPanel({ 7: "deleted-group" });
+    expect(mocks.captures.bulkDialogs).toHaveLength(0);
   });
 
   it("adds manual groups with a random reset emoji and rejects duplicates", () => {

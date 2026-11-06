@@ -276,6 +276,7 @@ export interface ConfigActions {
   addCustomProxyGroup: (group: Omit<CustomProxyGroup, "id">) => void;
   removeCustomProxyGroup: (id: string) => void;
   updateCustomProxyGroup: (id: string, group: Partial<CustomProxyGroup>) => void;
+  addCustomProxyGroupToGroups: (id: string, targetKeys: string[]) => void;
 
   // 代理组顺序
   setProxyGroupOrder: (order: string[]) => void;

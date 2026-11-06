@@ -184,6 +184,8 @@ describe("ProxyGroupsCustomGroupsPanel card props", () => {
     expect(typeof card.onOpenAdvancedSettings).toBe("function");
     expect(card.advancedSettingsActive).toBe(false);
     card.onOpenAdvancedSettings();
+    expect(typeof card.onAddToGroups).toBe("function");
+    card.onAddToGroups();
 
     const advanced = card.renderAdvancedContent(React.createElement("div", null, "rules"), 2) as React.ReactElement<any>;
     advanced.props.onChange({ regions: ["us"] });

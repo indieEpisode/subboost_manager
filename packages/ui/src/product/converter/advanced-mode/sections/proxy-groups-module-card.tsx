@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Check, ChevronDown, ChevronRight, HelpCircle, Pencil, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, HelpCircle, ListPlus, Pencil, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { Button } from "@subboost/ui/components/ui/button";
 import { IconButton } from "@subboost/ui/components/ui/icon-button";
 import { Input } from "@subboost/ui/components/ui/input";
@@ -125,6 +125,7 @@ export function ProxyGroupsModuleCard({
   strategy,
   onOpenAdvancedSettings,
   advancedSettingsActive = false,
+  onAddToGroups,
   rulesContentOverride,
   rulesCountOverride,
   advancedMode = false,
@@ -176,6 +177,7 @@ export function ProxyGroupsModuleCard({
   strategy?: LoadBalanceStrategy;
   onOpenAdvancedSettings?: () => void;
   advancedSettingsActive?: boolean;
+  onAddToGroups?: () => void;
   rulesContentOverride?: React.ReactNode;
   rulesCountOverride?: number;
   advancedMode?: boolean;
@@ -359,6 +361,13 @@ export function ProxyGroupsModuleCard({
 
         {!isEditing && (
           <div className="pointer-events-none relative z-10 col-start-2 sm:col-start-auto flex shrink-0 items-center justify-end gap-2">
+            {onAddToGroups && (
+              <Button type="button" variant="ghost" size="sm" className="pointer-events-auto h-7 px-2 text-fg-50"
+                title="添加到多个分流组" aria-label={`将 ${display.full} 添加到多个分流组`}
+                onClick={(event) => { event.stopPropagation(); onAddToGroups(); }}>
+                <ListPlus className="h-3.5 w-3.5" />
+              </Button>
+            )}
             <Switch
               aria-label={`启用 ${display.full} 分流组`}
               checked={isEnabled}

@@ -7,6 +7,7 @@ import { normalizePersistedRuleOrder } from "@subboost/core/generator/rules";
 import { normalizeProxyGroupAdvancedConfig } from "@subboost/core/proxy-group-advanced";
 import type { ConfigActions } from "../definitions";
 import type { GetState, SetAndGenerateConfig, SetState } from "../store-types";
+import { buildCustomGroupMemberPatch } from "../custom-group-membership";
 import {
   compactBuiltinRuleEdits,
   ruleTargetMatchesContainer,
@@ -22,6 +23,7 @@ type CustomActions = Pick<
   | "addCustomProxyGroup"
   | "removeCustomProxyGroup"
   | "updateCustomProxyGroup"
+  | "addCustomProxyGroupToGroups"
 >;
 
 type NormalizeRuleOrderState = {
@@ -71,6 +73,9 @@ export function createCustomActions(
   setAndGenerateConfig: SetAndGenerateConfig,
 ): CustomActions {
   return {
+    addCustomProxyGroupToGroups: (id, targetKeys) => {
+      setAndGenerateConfig((state) => buildCustomGroupMemberPatch(state, id, targetKeys));
+    },
     addCustomRule: (rule: CustomRule) => {
       setAndGenerateConfig((state) => {
         const nextCustomRules = [
