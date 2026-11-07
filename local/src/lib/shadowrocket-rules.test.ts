@@ -27,7 +27,7 @@ describe("Shadowrocket catalog rules", () => {
     expect(convertMetaRuleList("# comment\r\nexample.com\r\n+.example.net\n\n_local\n", "geosite"))
       .toBe("DOMAIN,example.com\nDOMAIN-SUFFIX,example.net\nDOMAIN,_local\n");
     expect(convertMetaRuleList("10.0.0.0/8\n2001:db8::/32\n", "geoip"))
-      .toBe("IP-CIDR,10.0.0.0/8\nIP-CIDR6,2001:db8::/32\n");
+      .toBe("IP-CIDR,10.0.0.0/8\nIP-CIDR,2001:db8::/32\n");
     for (const line of ["*.example.com", ".example.com", "example.com,REJECT", "regexp:.*", "a..com", ""]) {
       expect(() => convertMetaRuleList(line, "geosite")).toThrow();
     }

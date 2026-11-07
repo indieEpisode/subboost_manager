@@ -40,7 +40,8 @@ export function convertMetaRuleList(source: string, kind: MetaRuleSource["kind"]
       const match = /^([^/]+)\/(\d{1,3})$/.exec(line);
       const version = match ? isIP(match[1]) : 0;
       if (!match || !version || Number(match[2]) > (version === 6 ? 128 : 32)) throw new Error("Invalid IP rule.");
-      rules.push(`${version === 6 ? "IP-CIDR6" : "IP-CIDR"},${line}`);
+      // Shadowrocket's native rule lists use IP-CIDR for both address families.
+      rules.push(`IP-CIDR,${line}`);
     }
   }
   if (!rules.length) throw new Error("Empty rule list.");
