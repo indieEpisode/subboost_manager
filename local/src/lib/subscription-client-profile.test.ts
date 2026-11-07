@@ -24,6 +24,33 @@ const realityNode = {
 };
 
 describe("Shadowrocket subscription response profile", () => {
+  it("adapts official MRS providers only, preserving routing order, targets and unrelated definitions", () => {
+    const official = { type: "http", format: "mrs", behavior: "domain", url: "https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/geosite/youtube.mrs", path: "./rules/youtube.mrs", interval: 86400 };
+    const original = {
+      "rule-providers": {
+        youtube: official,
+        ip: { ...official, behavior: "ipcidr", url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/telegram.mrs", path: undefined },
+        custom: { ...official, url: "https://rules.example.invalid/custom.mrs" },
+        mismatch: { ...official, behavior: "ipcidr" },
+        file: { ...official, type: "file" },
+        yaml: { ...official, format: "yaml" },
+        invalid: null,
+      },
+      rules: ["RULE-SET,youtube,Video", "RULE-SET,ip,Landing,no-resolve", "MATCH,DIRECT"],
+      "proxy-groups": [{ name: "Landing", type: "select", proxies: ["SS2022"] }],
+      proxies: [{ name: "SS2022", type: "ss", cipher: "2022-blake3-aes-128-gcm", password: "test:key", "dialer-proxy": "Entry" }],
+    };
+    const source = yaml.dump(original);
+    const expected = yaml.load(source) as typeof original;
+    expected["rule-providers"].youtube = { ...official, format: "text", behavior: "classical", url: "https://app.invalid/api/rules/shadowrocket/geosite/youtube.list", path: "./rules/youtube.mrs.shadowrocket.list" };
+    Object.assign(expected["rule-providers"].ip, { format: "text", behavior: "classical", url: "https://app.invalid/api/rules/shadowrocket/geoip/telegram.list" });
+    const adapted = adaptSubscriptionForUserAgent(source, "Shadowrocket/3488", "https://app.invalid/");
+    expect(yaml.load(adapted)).toEqual(expected);
+    expect(adaptSubscriptionForUserAgent(adapted, "Shadowrocket/3488", "https://app.invalid")).toBe(adapted);
+    expect(adaptSubscriptionForUserAgent(source, "mihomo", "https://app.invalid")).toBe(source);
+    expect(adaptSubscriptionForUserAgent(source, "Shadowrocket/3488")).toBe(source);
+  });
+
   it.each([null, "", "Clash.Meta/1.19.0", "mihomo/1.19.0", "ClashMi/1.0", "NotShadowrocket/1.0", "ShadowrocketPlus/1.0"])(
     "preserves the complete original response for user-agent %s",
     (userAgent) => {

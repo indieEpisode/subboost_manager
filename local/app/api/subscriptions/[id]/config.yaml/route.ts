@@ -1,6 +1,7 @@
 import { apiError } from "@local/lib/http";
 import { generateSubscriptionYaml } from "@local/lib/subscription-service";
 import { adaptSubscriptionForUserAgent } from "@local/lib/subscription-client-profile";
+import { getAppUrl } from "@local/lib/env";
 import { buildSubscriptionResponseHeaders } from "@subboost/server-core/subscription";
 import {
   consumeLocalRateLimit,
@@ -62,7 +63,8 @@ export async function GET(request: Request, { params }: RouteContext) {
   const data = result.data;
   let responseYaml: string;
   try {
-    responseYaml = adaptSubscriptionForUserAgent(data.yaml, request.headers.get("user-agent"));
+    const userAgent = request.headers.get("user-agent");
+    responseYaml = adaptSubscriptionForUserAgent(data.yaml, userAgent, /\bShadowrocket\b/i.test(userAgent ?? "") ? getAppUrl() : undefined);
   } catch {
     // YAML parser errors can contain node credentials; do not expose their details.
     const response = apiError("Unable to prepare client subscription.", "INTERNAL_ERROR", 500);

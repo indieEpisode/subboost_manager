@@ -1,4 +1,5 @@
 import * as yaml from "js-yaml";
+import { parseMetaMrsUrl } from "./shadowrocket-rule-format";
 
 type Mapping = Record<string, unknown>;
 
@@ -50,7 +51,7 @@ function updateRealityNodes(nodes: unknown, override?: unknown): boolean {
 }
 
 /** Adapt the generated response only; never persist client-specific fingerprints. */
-export function adaptSubscriptionForUserAgent(source: string, userAgent: string | null): string {
+export function adaptSubscriptionForUserAgent(source: string, userAgent: string | null, ruleBaseUrl?: string): string {
   if (!/\bShadowrocket\b/i.test(userAgent ?? "") || !source.trim()) return source;
 
   const config: unknown = yaml.load(source);
@@ -63,6 +64,23 @@ export function adaptSubscriptionForUserAgent(source: string, userAgent: string 
       // Remote providers are fetched by the client and are outside this response.
       if (!isMapping(provider) || provider.type !== "inline") continue;
       if (updateRealityNodes(provider.payload, provider.override)) changed = true;
+    }
+  }
+
+  const ruleProviders = config["rule-providers"];
+  if (ruleBaseUrl && isMapping(ruleProviders)) {
+    for (const [key, provider] of Object.entries(ruleProviders)) {
+      if (!isMapping(provider) || provider.type !== "http" || provider.format !== "mrs") continue;
+      const source = parseMetaMrsUrl(provider.url);
+      if (!source || provider.behavior !== (source.kind === "geosite" ? "domain" : "ipcidr")) continue;
+      ruleProviders[key] = {
+        ...provider,
+        behavior: "classical",
+        format: "text",
+        url: `${ruleBaseUrl.replace(/\/+$/, "")}/api/rules/shadowrocket/${source.kind}/${source.name}.list`,
+        ...(typeof provider.path === "string" ? { path: `${provider.path}.shadowrocket.list` } : {}),
+      };
+      changed = true;
     }
   }
 

@@ -18,6 +18,7 @@
 ## Highlights & Use Cases
 
 - **Subscription conversion**: Import subscription links, YAML files, node links, and other common formats.
+- **Shadowrocket downloads**: User-Agent adaptation sets VLESS Reality to `chrome140`, removes the conflicting Mihomo ML-KEM option, and converts official MetaCubeX catalog MRS rules to classical text from the corresponding upstream lists. Clash/Mihomo download bodies remain unchanged. Custom MRS sources are not converted automatically; device import, routing, and chained connections still require testing.
 - **Node management**: Rename, delete, or configure listening ports for nodes in batches.
 - **Node filtering**: Build `filtered proxy groups` with only selected nodes by source, region, and custom rules.
 - **Chained proxies**: Configure chained proxies and `relay proxy groups` visually in one click.

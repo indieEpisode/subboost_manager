@@ -21,6 +21,7 @@ vi.mock("@local/lib/rate-limit", () => ({
 vi.mock("@local/lib/subscription-service", () => ({
   generateSubscriptionYaml: mocks.generateSubscriptionYaml,
 }));
+vi.mock("@local/lib/env", () => ({ getAppUrl: () => "https://app.example.invalid" }));
 
 import { GET } from "./route";
 
@@ -136,11 +137,19 @@ describe("local subscription YAML route", () => {
       expect(response.headers.get("profile-update-interval")).toBe("1");
       const body = await response.text();
       if (userAgent.startsWith("Shadowrocket")) {
-        const expected = yaml.load(source) as { proxies: Array<Record<string, unknown>> };
+        const expected = yaml.load(source) as { proxies: Array<Record<string, unknown>>; "rule-providers": Record<string, { url: string; path: string; format: string; behavior: string }> };
         expect(expected.proxies[0]["client-fingerprint"]).toBe("chrome120");
         expect((expected.proxies[0]["reality-opts"] as Record<string, unknown>)["support-x25519mlkem768"]).toBe(true);
         expected.proxies[0]["client-fingerprint"] = "chrome140";
         delete (expected.proxies[0]["reality-opts"] as Record<string, unknown>)["support-x25519mlkem768"];
+        for (const provider of Object.values(expected["rule-providers"])) {
+          const file = provider.url.split("/").at(-1)!.replace(/\.mrs$/, ".list");
+          const kind = provider.behavior === "domain" ? "geosite" : "geoip";
+          provider.url = `https://app.example.invalid/api/rules/shadowrocket/${kind}/${file}`;
+          provider.format = "text";
+          provider.behavior = "classical";
+          provider.path += ".shadowrocket.list";
+        }
         expect(yaml.load(body)).toEqual(expected);
       } else {
         expect(body).toBe(source);

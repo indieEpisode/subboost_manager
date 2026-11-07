@@ -15,6 +15,7 @@ import * as pluralYamlRoute from "../app/api/subscriptions/[id]/config.yaml/rout
 import * as pluralItemRoute from "../app/api/subscriptions/[id]/route";
 import * as pluralCollectionRoute from "../app/api/subscriptions/route";
 import * as pluralRefreshRoute from "../app/api/subscriptions/[id]/refresh/route";
+import * as yaml from "js-yaml";
 
 vi.mock("@local/lib/auth", () => ({
   getCurrentAdmin: vi.fn(),
@@ -116,6 +117,26 @@ beforeEach(() => {
 });
 
 describe("local subscription routes", () => {
+  it("uses the configured public app URL for Shadowrocket text rules and preserves Mihomo bytes", async () => {
+    vi.stubEnv("APP_URL", "https://public.example.invalid/");
+    const source = "# original comment\n" + yaml.dump({
+      "rule-providers": { video: { type: "http", format: "mrs", behavior: "domain", url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/youtube.mrs" } },
+      rules: ["RULE-SET,video,Proxy", "MATCH,DIRECT"],
+    });
+    vi.mocked(generateSubscriptionYaml).mockResolvedValue({ status: "ok", data: { yaml: source, name: "Main", subscriptionInfo: {} } } as never);
+    try {
+      const context = { params: Promise.resolve({ id: "profile-test" }) };
+      const shadow = await pluralYamlRoute.GET(new Request("https://untrusted-host.invalid/api/subscriptions/profile-test/config.yaml", { headers: { "user-agent": "Shadowrocket/3488" } }), context);
+      expect(shadow.status).toBe(200);
+      expect(shadow.headers.get("vary")).toContain("User-Agent");
+      const actual = yaml.load(await shadow.text()) as { "rule-providers": { video: { url: string } }; rules: string[] };
+      expect(actual["rule-providers"].video.url).toBe("https://public.example.invalid/api/rules/shadowrocket/geosite/youtube.list");
+      expect(actual.rules).toEqual(["RULE-SET,video,Proxy", "MATCH,DIRECT"]);
+      const mihomo = await pluralYamlRoute.GET(new Request("https://local.test/config.yaml", { headers: { "user-agent": "mihomo/1.19" } }), context);
+      expect(await mihomo.text()).toBe(source);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it("uses plural collection routes as the public subscription contract", async () => {
     const listResponse = await pluralCollectionRoute.GET();
     expect(listResponse.status).toBe(200);
